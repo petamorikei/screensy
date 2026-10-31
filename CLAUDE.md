@@ -51,31 +51,32 @@ docker compose up -d
 
 ### Signaling protocol (shared between `server.ts` and `screensy.ts`)
 
-The message types are **duplicated** in `screensy-rendezvous/server.ts` and `screensy-website/screensy.ts`. If you change the protocol, update both files. Messages are JSON with a `type` field:
+The message types are **duplicated** in `screensy-rendezvous/server.ts` and `screensy-website/screensy.ts`. If you change the protocol, update both files. Messages are JSON with a `type` field. There are no fixed roles: anyone in a room can present, and the design allows several presenters at once, but the server limits it with `MAX_PRESENTERS = 1`.
 
-1. The client connects to the WebSocket at the same host and path as the page and sends `join` with `roomId` (the URL hash, lowercased by the client).
-2. The **first client to join a room becomes the broadcaster** (receives `broadcast`). Everyone after that is a viewer (`view`). The room is destroyed when the broadcaster disconnects, and viewers get `broadcasterdisconnected`.
-3. The server gives each viewer an incrementing numeric string `viewerId` and notifies the broadcaster (`viewer`, `viewerdisconnected`). The broadcaster sends `requestviewers` after setup to receive the current viewer list.
-4. SDP/ICE is relayed: the broadcaster sends `webrtcbroadcaster` (with `viewerId`), and the server forwards it to that viewer as `webrtcviewer`. The reverse direction works the same way, with the server adding the `viewerId`. `kind` is `offer | answer | candidate`.
+1. The client connects to the WebSocket at the same host and path as the page and sends `join` with `roomId` (the URL hash, lowercased by the client), `name` and an optional `resumeToken`. The server answers `welcome` (`selfId`, `connectionId`, `resumeToken`) and then sends `roomstate` to everyone.
+2. `roomstate` is the whole state of the room: `participants` (`id`, `connectionId`, `name`, `connected`) and `presenters` (`participantId`, `streamId`, `hidden`, `status: "live" | "reconnecting"`). The server sends it after every change, and clients reconcile against it.
+3. A client captures its screen first and then sends `present`. The server assigns a new `streamId`, answers `presentaccepted` (before the next `roomstate`), and removes the oldest presenter when the limit is reached (this is how a takeover works). `present` with `resume: true` is only accepted while the sender still holds a seat; otherwise the server answers `presentrejected`. `stoppresenting` frees the seat. `streamstate` stores `hidden` for the sender's stream (no UI yet).
+4. SDP/ICE goes through `signal`. The sender sets `to`, `toConnection` and `streamId`, and the server relays it with `from` and `fromConnection` only if the recipient is connected with that `connectionId`, the stream is active, and the sender or the recipient is the presenter of that stream. `kind` is `offer | answer | candidate`. WebRTC connections are keyed by `(participantId, connectionId)`, so a new `connectionId` means "rebuild the connections".
+5. Reconnection: the resume token lives in `sessionStorage` (`screensy.resume.<roomId>`). A presenter whose socket closes keeps the seat as `reconnecting` for `GRACE_MS` (30 s); other participants are removed at once. A `join` with a known token takes over that participant, even if its old socket is still open: the old socket gets `replaced` and is closed, and its late `close` event is ignored. A room is deleted when it has no participants left, including those in the grace period.
 
-On the server, incoming messages are parsed as `unknown` and validated with the `isObject` / `instanceOf*` type guards. Invalid messages are silently dropped.
+The server pings every client every 15 s and terminates those that did not answer. `SCREENSY_GRACE_MS` and `SCREENSY_PING_INTERVAL_MS` shorten the timers for testing. Incoming messages are parsed as `unknown` and validated with the `isObject` / `instanceOf*` type guards. Invalid messages are silently dropped.
 
 ### Browser client (`screensy.ts`)
 
-`main()` creates a random room name in the hash if there is none, checks browser support (showing popups when something is missing), then calls `Room.join()`. `Room` creates either a `Broadcaster` (one `RTCPeerConnection` per viewer, with the `getDisplayMedia` stream) or a `Viewer` (one connection to the broadcaster).
+`main()` creates a random room name in the hash if there is none (with `history.replaceState`, so the page does not reload) and checks browser support. `RoomController` then joins the room and reconciles every `roomstate`:
+
+- `SignalingConnection` reconnects with backoff and drops messages while disconnected. After a reconnect, `welcome` and the next `roomstate` resynchronize everything.
+- `OutgoingStream` is this client's presentation: one `RTCPeerConnection` per recipient. It has no `streamId` while awaiting `presentaccepted`. Losing the own entry in `presenters` means the seat was taken over.
+- `IncomingStream` is one received stream per `streamId`. `PeerLink` holds back ICE candidates until the remote description is set.
+- `Ui` wraps the elements. The start/resume dialog must call `getDisplayMedia` synchronously in its submit handler, so that the click still counts as a user activation.
 
 The ICE servers are hard-coded to STUN/TURN on `location.hostname` with credentials `screensy:screensy`. These must match `turnserver.conf` (`user=screensy:screensy`, `realm=screensy`).
 
 ### Translations / i18n
 
-`screensy-website/translations/<lang-tag>.html` are full copies of the index page, one per language. `main.go` loads them all at startup and parses each filename as a BCP 47 tag (`language.MustParse`, so a bad filename panics). It serves the best match for `Accept-Language` on `/` and `/index.html`, with `en.html` as the fallback. All other paths go to `http.FileServer(".")`.
+`screensy-website/translations/` has two full copies of the index page: `en.html` and `ja.html`. `main.go` loads them at startup and parses each filename as a BCP 47 tag (`language.MustParse`, so a bad filename panics). It serves the best match for `Accept-Language` on `/` and `/index.html`, with `en.html` as the fallback. All other paths go to `http.FileServer(".")`.
 
-`screensy.ts` finds popups by element ID (`showPopup("access-denied")`, etc.), so every translation file must keep the same element IDs and structure as `en.html`. Only the text should change.
-
-To add a language:
-
-1. Copy `en.html` to a new file named after the language tag and translate it.
-2. Add an entry to `CHANGELOG.md` (Keep a Changelog format) and `CONTRIBUTORS.md`.
+`screensy.ts` finds elements by ID (`getElement`, `showPopup`, the `status-*` and `notice-*` elements, `[data-mode]` in the dialog), so both files must keep the same element IDs and structure. Only the text should change. Names are inserted into `<span class="name-slot">` elements, and `#text-anonymous` holds the name shown for someone without one.
 
 ### Deployment notes
 
