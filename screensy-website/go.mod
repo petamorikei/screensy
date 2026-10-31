@@ -1,5 +1,5 @@
 module screensy
 
-go 1.15
+go 1.27
 
-require golang.org/x/text v0.3.6
+require golang.org/x/text v0.43.0

@@ -1,24 +1,29 @@
-version: "3.3"
 services:
-    rendezvous:
-        build: "./screensy-rendezvous"
-        restart: unless-stopped
-    website:
-        build: "./screensy-website"
-        restart: unless-stopped
-    caddy:
-        image: "caddy:2.3.0-alpine"
-        restart: unless-stopped
-        volumes:
-            - ./Caddyfile:/etc/caddy/Caddyfile
-        ports:
-            - "443:443"
-            - "80:80"
-    turn:
-        image: "coturn/coturn:4.5.2"
-        restart: unless-stopped
-        # Use the host network directly as Docker performs badly with
-        # large port ranges
-        network_mode: "host"
-        volumes:
-            - ./turnserver.conf:/etc/coturn/turnserver.conf
+  rendezvous:
+    build:
+      # The build context is the repository root, because the pnpm lockfile
+      # lives there
+      context: .
+      dockerfile: screensy-rendezvous/Dockerfile
+    restart: unless-stopped
+  website:
+    build:
+      context: .
+      dockerfile: screensy-website/Dockerfile
+    restart: unless-stopped
+  caddy:
+    image: "caddy:2.11.7-alpine"
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    ports:
+      - "443:443"
+      - "80:80"
+  turn:
+    image: "coturn/coturn:4.18.0"
+    restart: unless-stopped
+    # Use the host network directly as Docker performs badly with
+    # large port ranges
+    network_mode: "host"
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf

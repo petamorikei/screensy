@@ -5,6 +5,34 @@ All notable changes to the screensy project will be documented in this file.
 The format is based on [Keep a Changelog], and this project adheres to
 [Semantic Versioning].
 
+## Unreleased
+
+### Changed
+
+-   Update the toolchain: Node.js 26, Go 1.27 and TypeScript 7. The versions
+    are pinned with mise in "mise.toml".
+-   Manage the JavaScript dependencies with pnpm in a workspace, instead of
+    npm.
+-   Replace Prettier with Biome for formatting and linting.
+-   Update the rendezvous server to ws 8. Node.js now runs its TypeScript code
+    directly, so it no longer needs to be compiled.
+-   Update `golang.org/x/text` to 0.43.0 and add the missing "go.sum".
+-   Update the Docker images to Node.js 26, Go 1.27 and Alpine 3.24. They are
+    now built from the root of the repository.
+-   Update Caddy to 2.11.7 and coturn to 4.18.0. Drop the `no-cli` and
+    `no-dtls` options from "turnserver.conf", because they are now the
+    default.
+-   Use `basic_auth` instead of the deprecated `basicauth` in the Caddyfile.
+-   The website container now serves files only from its own directory, instead
+    of from the root of the filesystem.
+
+### Fixed
+
+-   The rendezvous server now drops messages that are valid JSON but not
+    objects, instead of passing them to its type guards.
+-   The Docker example Caddyfile in the README now uses the correct port of the
+    website container.
+
 ## 1.9.0 - 2023-02-07
 
 ### Added

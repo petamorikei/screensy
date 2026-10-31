@@ -1,0 +1,17 @@
+{
+  "name": "screensy",
+  "private": true,
+  "description": "Simple peer-to-peer screen sharing",
+  "license": "GPL-3.0-or-later",
+  "packageManager": "pnpm@12.16.1",
+  "scripts": {
+    "check": "biome check --write .",
+    "lint": "biome check .",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "preinstall": "npx only-allow pnpm"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4"
+  }
+}

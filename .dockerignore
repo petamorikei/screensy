@@ -1,0 +1,8 @@
+**/node_modules
+.git
+.claude
+
+# Build output, which is regenerated inside the images
+screensy-website/screensy.js
+screensy-website/screensy.js.map
+screensy-website/screensy

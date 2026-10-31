@@ -1,0 +1,13 @@
+{
+  "name": "screensy-website",
+  "private": true,
+  "description": "The website and browser client for screensy",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
