@@ -32,6 +32,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     objects, instead of passing them to its type guards.
 -   The Docker example Caddyfile in the README now uses the correct port of the
     website container.
+-   The `external-ip` setting in "turnserver.conf" now takes effect with
+    Docker. The coturn image's default command also passed an auto-detected
+    external IP, which conflicted with it.
 
 ## 1.9.0 - 2023-02-07
 

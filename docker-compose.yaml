@@ -25,5 +25,8 @@ services:
     # Use the host network directly as Docker performs badly with
     # large port ranges
     network_mode: "host"
+    # Override the image's default command, which also passes an auto-detected
+    # --external-ip and thereby conflicts with the one in turnserver.conf
+    command: ["--log-file=stdout"]
     volumes:
       - ./turnserver.conf:/etc/coturn/turnserver.conf
