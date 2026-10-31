@@ -22,14 +22,6 @@
                 </p>
             </div>
         </noscript>
-        <div id="access-denied" class="popup hidden">
-            <h1>画面へのアクセスが拒否されました</h1>
-            <p>
-                画面を共有する為にScreensyのアクセスを許可して下さい。<br />
-                このページを再読み込みして、アクセスを許可してください。<br />
-                ブラウザがアクセスを要求しない場合は、ブラウザの設定を見直して下さい。
-            </p>
-        </div>
         <div id="screensharing-not-supported" class="popup hidden">
             <h1>画面共有がサポートされていないか、有効になっていません</h1>
             <p>
@@ -65,12 +57,90 @@
                 他の端末で接続を試みるか、本サイトの管理人にお問い合わせ下さい。
             </p>
         </div>
-        <div id="broadcaster-disconnected" class="popup hidden">
-            <h1>ブロードキャストの接続が切れました</h1>
+        <div id="toolbar" class="toolbar hidden">
+            <button id="present-button" class="hidden" type="button">
+                配信する
+            </button>
+            <button id="stop-button" class="hidden" type="button">
+                配信を停止
+            </button>
+            <span id="viewer-count" class="hidden">
+                視聴者: <span id="viewer-count-value">0</span>
+            </span>
         </div>
-        <div id="click-to-share" class="popup clickable hidden">
-            <h1>クリックして画面共有を始める</h1>
+        <div id="status" class="status hidden" role="status">
+            <p id="status-connecting" class="hidden">接続しています…</p>
+            <p id="status-server-reconnecting" class="hidden">
+                サーバーとの接続が切れました。再接続しています…
+            </p>
+            <p id="status-waiting" class="hidden">
+                まだ誰も配信していません。配信が始まると、ここに画面が表示されます。
+            </p>
+            <p id="status-joining" class="hidden">
+                <span class="name-slot"></span>さんの画面に接続しています…
+            </p>
+            <p id="status-switching" class="hidden">
+                <span class="name-slot"></span>さんの画面に切り替えています…
+            </p>
+            <p id="status-presenter-reconnecting" class="hidden">
+                <span class="name-slot"></span>さんの接続が切れました。再接続を待っています…
+            </p>
         </div>
+        <div class="notices">
+            <div id="notice-taken-over" class="notice hidden" role="status">
+                <p><span class="name-slot"></span>さんが配信を引き継ぎました。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-connection-lost" class="notice hidden" role="status">
+                <p>接続が切れたため、配信を停止しました。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-access-denied" class="notice hidden" role="status">
+                <p>
+                    画面にアクセスできませんでした。ブラウザがアクセスを求めてこない場合は、ブラウザの設定を見直して下さい。
+                </p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+        </div>
+        <dialog id="present-dialog">
+            <form id="present-form">
+                <h1 data-mode="start">画面を配信する</h1>
+                <h1 data-mode="resume">配信を再開しますか？</h1>
+                <p data-mode="resume">
+                    ページを再読み込みする前に配信していました。続けるには、もう一度画面を選んで下さい。
+                </p>
+                <p id="present-takeover-warning" class="hidden">
+                    <span class="name-slot"></span>さんが配信中です。開始すると、配信を引き継ぎます。
+                </p>
+                <label for="present-name">あなたの名前</label>
+                <input
+                    id="present-name"
+                    name="name"
+                    type="text"
+                    maxlength="32"
+                    pattern=".*\S.*"
+                    required
+                    autocomplete="nickname"
+                />
+                <div class="dialog-buttons">
+                    <button id="present-cancel" type="button">
+                        <span data-mode="start">キャンセル</span>
+                        <span data-mode="resume">配信をやめる</span>
+                    </button>
+                    <button type="submit">
+                        <span data-mode="start">配信を開始</span>
+                        <span data-mode="resume">再開する</span>
+                    </button>
+                </div>
+            </form>
+        </dialog>
+        <span id="text-anonymous" class="hidden">誰か</span>
         <video
             id="stream"
             autoplay="autoplay"
