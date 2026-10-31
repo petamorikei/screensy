@@ -12,7 +12,7 @@ The repository is a pnpm workspace with two packages, plus deployment config at 
 - `screensy-website/`: Static file server written in Go (port 8080). It also serves the browser client `screensy.ts` and `styles.css`. `tsc` compiles the client to `screensy.js` next to the source, without a bundler.
 - Root: `docker-compose.yaml` (rendezvous, website, Caddy reverse proxy, coturn STUN/TURN), `Caddyfile`, `turnserver.conf`.
 
-The toolchain versions are pinned in `mise.toml`: Node, pnpm and Go.
+The toolchain versions are pinned in `mise.toml`: Node, pnpm, Go and prek.
 
 ## Commands
 
@@ -42,6 +42,7 @@ docker compose up -d
   - Fix lint violations in code instead of disabling rules.
 - TypeScript 7 (native compiler). The rendezvous tsconfig sets `erasableSyntaxOnly` and `verbatimModuleSyntax`, which Node's type stripping requires. Do not use enums, namespaces or parameter properties there, and use `import type` for type-only imports.
 - The website tsconfig must keep emitting a classic script. `screensy.ts` has no `import`/`export`, and the HTML loads it with a plain `<script>`.
+- prek git hooks (`prek.toml`) are installed by the `prepare` script on `pnpm install`. On commit, they run the builtin whitespace/merge-conflict/large-file checks, `biome check --write` and `gofmt`. Run them manually with `mise exec -- prek run --all-files`.
 - Claude Code hooks in `.claude/`, adapted from the templates repo, need `jq`:
   - `post-edit.sh` runs `biome check --write` or `gofmt` on each edited file.
   - `stop-check.sh` blocks the stop when Biome, `pnpm -r typecheck`, `go vet` or `gofmt` report problems.

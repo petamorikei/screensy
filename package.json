@@ -9,6 +9,7 @@
     "lint": "biome check .",
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r build",
+    "prepare": "mise exec -- prek install",
     "preinstall": "npx only-allow pnpm"
   },
   "devDependencies": {

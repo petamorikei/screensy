@@ -1,0 +1,15 @@
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files", args = ["--maxkb", "2048"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "biome-check", name = "biome check", entry = "pnpm exec biome check --write --no-errors-on-unmatched", language = "system", types_or = ["javascript", "ts", "json", "css", "html", "markdown", "yaml"] },
+  { id = "gofmt", name = "gofmt", entry = "mise exec -- gofmt -l -w", language = "system", types = ["go"] },
+]
