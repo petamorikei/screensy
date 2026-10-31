@@ -437,7 +437,7 @@ class Room {
     this.roomId = roomId;
     this.videoElement = <HTMLVideoElement>document.getElementById("stream");
 
-    const webSocketProtocol = window.location.protocol === "http" ? "ws" : "wss";
+    const webSocketProtocol = window.location.protocol === "http:" ? "ws" : "wss";
     const webSocketUrl = `${webSocketProtocol}://${location.host}${location.pathname}`;
 
     this.webSocket = new WebSocket(webSocketUrl);

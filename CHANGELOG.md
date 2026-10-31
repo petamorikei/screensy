@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+-   The website now connects to the rendezvous server with `ws://` when it is
+    served over plain HTTP. It always used `wss://` before, because it compared
+    `location.protocol` with "http" instead of "http:".
 -   The rendezvous server now drops messages that are valid JSON but not
     objects, instead of passing them to its type guards.
 -   The Docker example Caddyfile in the README now uses the correct port of the
