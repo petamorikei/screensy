@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -70,7 +70,7 @@ func fetchTranslations() ([][]byte, language.Matcher) {
 		fileNames[idx] = filepath.Base(filePath)
 
 		// Read the content of the file into the cache
-		fileCache[idx], err = ioutil.ReadFile(filePath)
+		fileCache[idx], err = os.ReadFile(filePath)
 		if err != nil {
 			panic("Could not read localisation file " + filePath)
 		}

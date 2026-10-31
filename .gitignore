@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+
+# Build output of the browser client
+/screensy-website/screensy.js
+/screensy-website/screensy.js.map
+
+# Go binary
+/screensy-website/screensy
