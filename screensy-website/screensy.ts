@@ -92,14 +92,8 @@ type MessageSender = (msg: Message) => Promise<void>;
  * @see https://stackoverflow.com/a/63718685
  */
 function wait(target: EventTarget, listenerName: string): Promise<Event> {
-  // Lambda that returns a listener for the given resolve lambda
-  const listener = (resolve: (value: Event | PromiseLike<Event>) => void) => (event: Event) => {
-    target.removeEventListener(listenerName, listener(resolve));
-    resolve(event);
-  };
-
-  return new Promise((resolve, _reject) => {
-    target.addEventListener(listenerName, listener(resolve));
+  return new Promise((resolve) => {
+    target.addEventListener(listenerName, resolve, { once: true });
   });
 }
 
