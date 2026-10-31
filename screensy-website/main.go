@@ -87,6 +87,9 @@ func fetchTranslations() ([][]byte, language.Matcher) {
 
 func getServer(fileServer http.Handler) func(writer http.ResponseWriter, request *http.Request) {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		// Revalidate on every load, so that a cached screensy.js never talks to a newer rendezvous server
+		writer.Header().Set("Cache-Control", "no-cache")
+
 		if request.URL.Path == "/" || request.URL.Path == "/index.html" {
 			acceptLanguageHeader := request.Header.Get("Accept-Language")
 			tags, _, _ := language.ParseAcceptLanguage(acceptLanguageHeader)
