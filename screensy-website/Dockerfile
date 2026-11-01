@@ -6,10 +6,14 @@ RUN npm install --global pnpm@12.16.1
 WORKDIR /app
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY screensy-protocol/ ./screensy-protocol/
 COPY screensy-rendezvous/package.json ./screensy-rendezvous/
-COPY screensy-website/package.json screensy-website/tsconfig.json screensy-website/screensy.ts ./screensy-website/
+COPY screensy-website/package.json screensy-website/tsconfig.json screensy-website/build.mjs ./screensy-website/
+COPY screensy-website/src/ ./screensy-website/src/
 
-RUN pnpm install --frozen-lockfile --ignore-scripts --filter screensy-website
+# The website and the packages it depends on (the shared protocol). esbuild runs from its platform package, without
+# install scripts.
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter "screensy-website..."
 RUN pnpm --filter screensy-website build
 
 
@@ -34,9 +38,9 @@ FROM alpine:3.24
 # The webserver serves files from its working directory
 WORKDIR /app
 
+# The source map carries the sources of the bundle
 COPY --from=typescript_builder /app/screensy-website/screensy.js ./
 COPY --from=typescript_builder /app/screensy-website/screensy.js.map ./
-COPY --from=typescript_builder /app/screensy-website/screensy.ts ./
 
 COPY --from=go_builder /go/src/app/screensy-website ./
 

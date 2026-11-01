@@ -26,32 +26,32 @@ const ORIGIN = `http://localhost:${PROXY_PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const children = [];
-function run(cmd, args, opts) {
+const run = (cmd, args, opts) => {
   const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
   child.stdout.on("data", () => {});
   child.stderr.on("data", (d) => process.env.DEBUG && process.stderr.write(d));
   children.push(child);
   return child;
-}
-function cleanup() {
+};
+const cleanup = () => {
   for (const c of children) c.kill("SIGKILL");
-}
+};
 process.on("exit", cleanup);
 
 const proxySockets = new Map();
 const proxyBlocked = new Set();
 
 // Breaks the tagged WebSockets without a close frame, like a broken network. The server sees code 1006.
-function dropSockets(tag) {
+const dropSockets = (tag) => {
   for (const { socket, upstream } of proxySockets.get(tag) ?? []) {
     socket.destroy();
     upstream.destroy();
   }
   proxySockets.delete(tag);
-}
+};
 
 // Same routing as the Caddyfile: WebSocket upgrades to 4000, everything else to 8080
-function startProxy() {
+const startProxy = () => {
   const server = http.createServer((req, res) => {
     const upstream = http.request(
       { host: "localhost", port: 8080, path: req.url, method: req.method, headers: req.headers },
@@ -90,9 +90,9 @@ function startProxy() {
   });
   server.listen(PROXY_PORT);
   return server;
-}
+};
 
-async function waitHttp(url, timeout = 15000) {
+const waitHttp = async (url, timeout = 15000) => {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     try {
@@ -102,7 +102,7 @@ async function waitHttp(url, timeout = 15000) {
     await sleep(200);
   }
   throw new Error(`timeout waiting for ${url}`);
-}
+};
 
 class Cdp {
   constructor(url) {
@@ -154,13 +154,18 @@ const INIT_SCRIPT = `
   // How often the page reads the statistics
   window.__getStatsCalls = 0;
   const nativeGetStats = NativePeerConnection.prototype.getStats;
-  NativePeerConnection.prototype.getStats = function (...args) { window.__getStatsCalls++; return nativeGetStats.apply(this, args); };
+  // Methods, not arrow functions: they need the connection or the sender as this
+  Object.assign(NativePeerConnection.prototype, {
+    getStats(...args) { window.__getStatsCalls++; return nativeGetStats.apply(this, args); },
+  });
   const nativeReplaceTrack = RTCRtpSender.prototype.replaceTrack;
-  RTCRtpSender.prototype.replaceTrack = async function (track) {
-    window.__replaced.push({ kind: track?.kind ?? null, enabled: track?.enabled ?? null, type: track?.constructor.name ?? null });
-    if (window.__replaceHook) await window.__replaceHook(this, track);
-    return nativeReplaceTrack.call(this, track);
-  };
+  Object.assign(RTCRtpSender.prototype, {
+    async replaceTrack(track) {
+      window.__replaced.push({ kind: track?.kind ?? null, enabled: track?.enabled ?? null, type: track?.constructor.name ?? null });
+      if (window.__replaceHook) await window.__replaceHook(this, track);
+      return nativeReplaceTrack.call(this, track);
+    },
+  });
 
   // Headless Chrome cannot accept the screen picker. __nextCapture sets the size, a fixed color and audio of the next
   // capture, its frame rate and the surface it reports; by default it is 640x360 at 20 fps, with changing colors and
@@ -232,7 +237,7 @@ const VIDEO_COLOR = `(() => {
   return { r: r / n, g: g / n, b: b / n, width: video.videoWidth, height: video.videoHeight };
 })()`;
 
-async function waitColor(page, desc, predicate, timeout = 10000) {
+const waitColor = async (page, desc, predicate, timeout = 10000) => {
   const end = Date.now() + timeout;
   let last;
   while (Date.now() < end) {
@@ -241,7 +246,7 @@ async function waitColor(page, desc, predicate, timeout = 10000) {
     await sleep(200);
   }
   throw new Error(`${page.label}: timeout waiting for ${desc}\nlast color: ${JSON.stringify(last)}`);
-}
+};
 
 const PAGE_STATE = `(() => {
   const visible = (sel) => [...document.querySelectorAll(sel)].filter((e) => !e.classList.contains("hidden") && !e.closest(".hidden")).map((e) => e.id);
@@ -356,12 +361,12 @@ class Page {
   }
 }
 
-async function newPage(cdp, label, { acceptLanguage = "en-US", initExtra = "" } = {}) {
+const newPage = async (cdp, label, { acceptLanguage = "en-US", initExtra = "" } = {}) => {
   const { browserContextId } = await cdp.send("Target.createBrowserContext", { disposeOnDetach: true });
   return newPageInContext(cdp, label, browserContextId, { acceptLanguage, initExtra });
-}
+};
 
-async function newPageInContext(cdp, label, browserContextId, { acceptLanguage = "en-US", initExtra = "" } = {}) {
+const newPageInContext = async (cdp, label, browserContextId, { acceptLanguage = "en-US", initExtra = "" } = {}) => {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank", browserContextId });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   const page = new Page(cdp, sessionId, label);
@@ -373,10 +378,10 @@ async function newPageInContext(cdp, label, browserContextId, { acceptLanguage =
   await page.send("Network.setExtraHTTPHeaders", { headers: { "Accept-Language": acceptLanguage } });
   await page.send("Page.addScriptToEvaluateOnNewDocument", { source: INIT_SCRIPT + initExtra });
   return page;
-}
+};
 
 const results = [];
-async function step(name, fn) {
+const step = async (name, fn) => {
   try {
     await fn();
     results.push(true);
@@ -390,9 +395,9 @@ async function step(name, fn) {
     );
     throw e;
   }
-}
+};
 
-function isPortInUse(port) {
+const isPortInUse = (port) => {
   return new Promise((resolve) => {
     const probe = net.connect(port, "localhost");
     probe.on("connect", () => {
@@ -401,9 +406,9 @@ function isPortInUse(port) {
     });
     probe.on("error", () => resolve(false));
   });
-}
+};
 
-async function main() {
+const main = async () => {
   // Other servers on these ports would get the checks instead, with other timers
   const busy = [];
   for (const port of [4000, 8080, PROXY_PORT, CDP_PORT]) {
@@ -917,7 +922,7 @@ async function main() {
     const p = s.getParameters();
     return { ...p.encodings[0], degradationPreference: p.degradationPreference, contentHint: s.track.contentHint };
   })`;
-  async function waitEval(page, desc, expression, predicate, timeout = 10000) {
+  const waitEval = async (page, desc, expression, predicate, timeout = 10000) => {
     const end = Date.now() + timeout;
     let last;
     while (Date.now() < end) {
@@ -926,7 +931,7 @@ async function main() {
       await sleep(200);
     }
     throw new Error(`${page.label}: timeout waiting for ${desc}\nlast: ${JSON.stringify(last)}`);
-  }
+  };
 
   await step("the menu opens and shows the default quality settings", async () => {
     const sa = await a.state();
@@ -1046,14 +1051,17 @@ async function main() {
       bitrate: "100",
       degradation: "maintain-resolution",
     });
-    await a3.eval(`localStorage.setItem("screensy.quality", "{broken")`);
-    await a3.reload();
-    assert.deepEqual(await a3.eval(MENU_VALUES), {
-      frameRate: "30",
-      resolution: "",
-      bitrate: "100",
-      degradation: "maintain-resolution",
-    });
+    // Stored values that are not an object at all: the page still starts, with the defaults
+    for (const stored of ["{broken", "null", "[60]", "42"]) {
+      await a3.eval(`localStorage.setItem("screensy.quality", ${JSON.stringify(stored)})`);
+      await a3.reload();
+      await a3.waitFor(`A3 joined with ${stored}`, (s) => s.toolbar.includes("menu-button"));
+      assert.deepEqual(
+        await a3.eval(MENU_VALUES),
+        { frameRate: "30", resolution: "", bitrate: "100", degradation: "maintain-resolution" },
+        `stored ${stored}`,
+      );
+    }
     for (const page of [a3, c]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
@@ -1764,7 +1772,7 @@ async function main() {
   });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");
-}
+};
 
 main()
   .catch((e) => {

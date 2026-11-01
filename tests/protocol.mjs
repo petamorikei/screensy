@@ -436,6 +436,38 @@ test("signal relay validation", async () => {
   await v2.close();
 });
 
+test("signal payloads are validated, and relayed with every field", async () => {
+  const room = newRoom();
+  const p = new Client("p");
+  const v = new Client("v");
+  await p.join(room, "P");
+  await v.join(room, "V");
+  const acc = await p.present();
+  const sig = (kind, message) => ({
+    type: "signal",
+    to: v.welcome.selfId,
+    toConnection: v.welcome.connectionId,
+    streamId: acc.streamId,
+    kind,
+    message,
+  });
+  // Malformed payloads: dropped
+  p.send(sig("offer", { type: "offer", sdp: 5 }));
+  p.send(sig("offer", "v=0"));
+  p.send(sig("candidate", { candidate: "candidate:1", sdpMLineIndex: "0" }));
+  p.send(sig("bogus", { type: "offer", sdp: "x" }));
+  await v.none((m) => m.type === "signal");
+  // RTCIceCandidate.toJSON() sends null for the fields that it does not know
+  const candidate = { candidate: "candidate:1", sdpMid: null, sdpMLineIndex: null, usernameFragment: null };
+  p.send(sig("candidate", candidate));
+  const got = await v.type("signal");
+  assert.equal(got.kind, "candidate");
+  assert.deepEqual(got.message, candidate);
+  assert.equal(got.to, undefined, "the recipient fields are not relayed");
+  await p.close();
+  await v.close();
+});
+
 test("name normalization and setname", async () => {
   const room = newRoom();
   const a = new Client("a");
