@@ -180,18 +180,19 @@ const INIT_SCRIPT = `
     const context = canvas.getContext("2d");
     let i = 0;
     const frameRate = options.frameRate ?? 20;
-    // A black and white checkerboard of 16 px squares, to measure how sharp the received video is
+    // A black and white checkerboard, of 16 px squares by default, to measure how sharp the received video is
     let fill = options.color;
     if (options.pattern === "checker") {
+      const square = options.square ?? 16;
       const tile = document.createElement("canvas");
-      tile.width = 32;
-      tile.height = 32;
+      tile.width = square * 2;
+      tile.height = square * 2;
       const tileContext = tile.getContext("2d");
       tileContext.fillStyle = "white";
-      tileContext.fillRect(0, 0, 32, 32);
+      tileContext.fillRect(0, 0, square * 2, square * 2);
       tileContext.fillStyle = "black";
-      tileContext.fillRect(0, 0, 16, 16);
-      tileContext.fillRect(16, 16, 16, 16);
+      tileContext.fillRect(0, 0, square, square);
+      tileContext.fillRect(square, square, square, square);
       fill = context.createPattern(tile, "repeat");
     }
     setInterval(() => { context.fillStyle = fill ?? "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, width, height); }, 1000 / frameRate);
@@ -1329,6 +1330,59 @@ async function main() {
     await a.click("#unblur-button");
     await waitEval(b, "B sees it sharp", VIDEO_EDGES, isSharp, 10000);
     await a.waitFor("blur button back", (s) => s.toolbar.includes("blur-button"));
+  });
+
+  await step("the strength slider changes the blur while blurred, but not the sent size", async () => {
+    const sliderShown = `!document.getElementById("blur-strength-control").classList.contains("hidden")`;
+    const setStrength = (value) =>
+      a.eval(`(() => {
+        const input = document.getElementById("blur-strength");
+        input.value = "${value}";
+        input.dispatchEvent(new Event("input"));
+      })()`);
+    assert.equal(await a.eval(sliderShown), false, "no slider while sharp");
+    // Squares of 64 px: a light blur still shows them, a strong one melts them
+    await switchTo(a, { width: 640, height: 360, pattern: "checker", square: 64 });
+    await waitEval(
+      b,
+      "B sees the large squares",
+      VIDEO_EDGES,
+      (v) => v != null && v.width === 640 && v.edges > 5,
+      10000,
+    );
+    await a.click("#blur-button");
+    await waitEval(b, "B gets the blurred size", VIDEO_EDGES, (v) => v != null && v.width === 160, 10000);
+    assert.equal(await a.eval(sliderShown), true);
+    const shownStrength = `document.getElementById("blur-strength-value").value`;
+    assert.equal(await a.eval(`document.getElementById("blur-strength").value`), "24", "the default strength");
+    assert.equal(await a.eval(shownStrength), "24", "the value is shown next to the slider");
+
+    await setStrength(64);
+    await sleep(1500);
+    const strong = await b.eval(VIDEO_EDGES);
+    assert.equal(await a.eval(shownStrength), "64");
+    // The minimum
+    await setStrength(4);
+    const light = await waitEval(
+      b,
+      "a lighter blur",
+      VIDEO_EDGES,
+      (v) => v != null && v.edges > strong.edges + 1,
+      10000,
+    );
+    console.log(`     strength 64: ${JSON.stringify(strong)}, strength 4: ${JSON.stringify(light)}`);
+    assert.equal(strong.width, 160);
+    assert.equal(light.width, 160, "the sent size stays the same");
+    assert.equal(await a.eval(shownStrength), "4");
+    assert.equal(await a.eval(`localStorage.getItem("screensy.blur")`), "4");
+
+    await setStrength(24);
+    await a.click("#unblur-button");
+    await a.waitFor("unblurred", (s) => s.toolbar.includes("blur-button"));
+    assert.equal(await a.eval(sliderShown), false, "the slider goes with the blur");
+    // Back to the small squares for the next scenarios
+    await switchTo(a, CHECKER);
+    await waitEval(b, "B sees the sharp checkerboard", VIDEO_EDGES, isSharp, 10000);
   });
 
   await step("a switch while blurred only ever sends the blurred video", async () => {

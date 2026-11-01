@@ -674,23 +674,39 @@ function isBlurSupported(): boolean {
 }
 
 /**
- * The blur shrinks each frame to this fraction of its size, which removes the details, and scales it up again
+ * The strength of the blur: how many CSS pixels on screen, in each direction, become one pixel. The presenter chooses
+ * it with a slider. The minimum is the size of a pixel of the blurred video (BLUR_OUTPUT_CSS_PX), the lightest blur
+ * that it can show, which still lets large text be read; 16 already hides body text; 64 leaves little more than the
+ * layout.
  */
-const BLUR_SAMPLE_DIVISOR = 24;
+const BLUR_MIN_STRENGTH = 4;
+const BLUR_MAX_STRENGTH = 64;
+const BLUR_DEFAULT_STRENGTH = 24;
+const BLUR_STORAGE_KEY = "screensy.blur";
 
 /**
- * The blurred video is sent at this fraction of the capture's size. It has no details to keep.
+ * Each pixel of the blurred video covers this many CSS pixels on screen in each direction, whatever the strength, so
+ * that moving the slider never changes the size of the sent video (a new size makes the encoder start over)
  */
-const BLUR_OUTPUT_DIVISOR = 4;
+const BLUR_OUTPUT_CSS_PX = 4;
+
+function isValidBlurStrength(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= BLUR_MIN_STRENGTH && (value as number) <= BLUR_MAX_STRENGTH;
+}
+
+function readBlurStrength(): number {
+  const stored = Number(readStorage(getLocalStorage, BLUR_STORAGE_KEY));
+  return isValidBlurStrength(stored) ? stored : BLUR_DEFAULT_STRENGTH;
+}
 
 /**
- * Smooths the scaled-up frame. The frame is drawn this much larger on each side, so that the blur does not darken the
- * edges.
- */
-const BLUR_SMOOTHING_PX = 4;
-
-/**
- * Turns a video track into a strongly blurred one: text cannot be read, but the layout and movement can be seen
+ * Turns a video track into a blurred one: text cannot be read, but the layout and movement can be seen.
+ *
+ * Each frame is shrunk by halves, so that every step averages its pixels (a single large step in a canvas only picks
+ * some pixels, which leaves sharp fragments), down to one pixel per strength × devicePixelRatio device pixels. The
+ * density makes the same strength look the same on a Retina screen, assuming that the shared screen has the density of
+ * the screen of this window. The result is scaled up to the fixed output size and smoothed with a blur that grows
+ * with the scale.
  */
 class BlurProcessor {
   /**
@@ -698,9 +714,15 @@ class BlurProcessor {
    */
   readonly track: MediaStreamTrack;
 
+  private strength: number;
   private readonly abort = new AbortController();
 
-  constructor(source: MediaStreamTrack) {
+  /**
+   * The canvases of the halving steps, reused from frame to frame
+   */
+  private readonly halves: OffscreenCanvas[] = [];
+
+  constructor(source: MediaStreamTrack, strength: number) {
     const processor = new MediaStreamTrackProcessor({ track: source });
     const generator = new MediaStreamTrackGenerator({ kind: "video" });
     const sample = new OffscreenCanvas(2, 2);
@@ -713,23 +735,30 @@ class BlurProcessor {
     }
 
     this.track = generator;
+    this.strength = strength;
 
     const blur = new TransformStream<VideoFrame, VideoFrame>({
       transform: (frame, controller) => {
         try {
+          // Zooming the page out must not weaken the blur below that of a plain screen
+          const density = Math.max(window.devicePixelRatio || 1, 1);
           const width = frame.displayWidth;
           const height = frame.displayHeight;
-          resizeCanvas(sample, width / BLUR_SAMPLE_DIVISOR, height / BLUR_SAMPLE_DIVISOR);
-          resizeCanvas(output, width / BLUR_OUTPUT_DIVISOR, height / BLUR_OUTPUT_DIVISOR);
+          resizeCanvas(sample, width / (this.strength * density), height / (this.strength * density));
+          resizeCanvas(output, width / (BLUR_OUTPUT_CSS_PX * density), height / (BLUR_OUTPUT_CSS_PX * density));
 
+          const shrunk = this.shrink(frame, width, height, sample.width);
           sampleContext.imageSmoothingEnabled = true;
           sampleContext.imageSmoothingQuality = "high";
-          sampleContext.drawImage(frame, 0, 0, sample.width, sample.height);
+          sampleContext.drawImage(shrunk, 0, 0, sample.width, sample.height);
 
-          const margin = BLUR_SMOOTHING_PX * 2;
+          // About two thirds of a sample pixel, so that the scaled-up pixels melt together. The frame is drawn larger
+          // on each side, so that the blur does not darken the edges.
+          const smoothing = ((output.width / sample.width) * 2) / 3;
+          const margin = smoothing * 2;
           outputContext.imageSmoothingEnabled = true;
           outputContext.imageSmoothingQuality = "high";
-          outputContext.filter = `blur(${BLUR_SMOOTHING_PX}px)`;
+          outputContext.filter = `blur(${smoothing}px)`;
           outputContext.drawImage(sample, -margin, -margin, output.width + margin * 2, output.height + margin * 2);
 
           controller.enqueue(new VideoFrame(output, { timestamp: frame.timestamp }));
@@ -746,9 +775,49 @@ class BlurProcessor {
       .catch(() => {});
   }
 
+  /**
+   * Takes effect from the next frame
+   */
+  setStrength(strength: number): void {
+    this.strength = strength;
+  }
+
   stop(): void {
     this.abort.abort();
     this.track.stop();
+  }
+
+  /**
+   * Halves the frame until the next half would be smaller than the target width
+   */
+  private shrink(frame: VideoFrame, width: number, height: number, targetWidth: number): CanvasImageSource {
+    let current: CanvasImageSource = frame;
+    let currentWidth = width;
+    let currentHeight = height;
+    let step = 0;
+
+    while (currentWidth / 2 >= targetWidth) {
+      currentWidth = Math.max(2, Math.round(currentWidth / 2));
+      currentHeight = Math.max(2, Math.round(currentHeight / 2));
+
+      this.halves[step] ??= new OffscreenCanvas(2, 2);
+      const half = this.halves[step];
+      resizeCanvas(half, currentWidth, currentHeight);
+
+      const context = half.getContext("2d");
+
+      if (context == null) {
+        break;
+      }
+
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(current, 0, 0, currentWidth, currentHeight);
+      current = half;
+      step++;
+    }
+
+    return current;
   }
 }
 
@@ -783,9 +852,12 @@ interface Capture {
   preview: MediaStream;
 }
 
-function prepareCapture(stream: MediaStream, hidden: boolean, blurred: boolean): Capture {
+/**
+ * @param blurStrength The strength of the blur, or null to send the capture sharp
+ */
+function prepareCapture(stream: MediaStream, hidden: boolean, blurStrength: number | null): Capture {
   const video = stream.getVideoTracks()[0] ?? null;
-  const blur = blurred && video != null ? new BlurProcessor(video) : null;
+  const blur = blurStrength != null && video != null ? new BlurProcessor(video, blurStrength) : null;
   const capture: Capture = {
     stream,
     video,
@@ -854,6 +926,7 @@ class OutgoingStream {
 
   private isHidden = false;
   private isBlurred = false;
+  private blurStrength: number;
   private stopped = false;
 
   /**
@@ -868,9 +941,11 @@ class OutgoingStream {
     rtcConfig: RTCConfiguration,
     sendMessage: MessageSender,
     quality: QualitySettings,
+    blurStrength: number,
   ) {
     this.quality = quality;
-    this.capture = prepareCapture(mediaStream, false, false);
+    this.blurStrength = blurStrength;
+    this.capture = prepareCapture(mediaStream, false, null);
     this.tuneCapture(this.capture);
     this.rtcConfig = rtcConfig;
     this.sendMessage = sendMessage;
@@ -956,7 +1031,7 @@ class OutgoingStream {
     let next: Capture;
 
     try {
-      next = prepareCapture(mediaStream, this.isHidden, this.isBlurred);
+      next = prepareCapture(mediaStream, this.isHidden, this.isBlurred ? this.blurStrength : null);
     } catch (error) {
       console.warn("Could not prepare the new capture.", error);
 
@@ -998,7 +1073,7 @@ class OutgoingStream {
     let blur: BlurProcessor | null = null;
 
     try {
-      blur = blurred ? new BlurProcessor(current.video) : null;
+      blur = blurred ? new BlurProcessor(current.video, this.blurStrength) : null;
     } catch (error) {
       console.warn("Could not blur the screen.", error);
       return false;
@@ -1018,6 +1093,15 @@ class OutgoingStream {
     }
 
     return changed;
+  }
+
+  /**
+   * Changes the strength of the blur, now if blurred, or for the next time
+   */
+  setBlurStrength(strength: number): void {
+    this.blurStrength = strength;
+    this.capture.blur?.setStrength(strength);
+    this.pending?.blur?.setStrength(strength);
   }
 
   /**
@@ -1554,6 +1638,7 @@ class Ui {
   public onswitch: (() => void) | null = null;
   public onhide: ((hidden: boolean) => void) | null = null;
   public onblur: ((blurred: boolean) => void) | null = null;
+  public onblurstrength: ((strength: number) => void) | null = null;
   public onqualitychange: ((quality: QualitySettings) => void) | null = null;
   /**
    * The size of the video changed, for example when the presenter resizes the shared window
@@ -1606,6 +1691,9 @@ class Ui {
   private readonly showButton: HTMLButtonElement;
   private readonly blurButton: HTMLButtonElement;
   private readonly unblurButton: HTMLButtonElement;
+  private readonly blurStrengthControl: HTMLElement;
+  private readonly blurStrengthInput: HTMLInputElement;
+  private readonly blurStrengthValue: HTMLOutputElement;
   private readonly frameRateSelect: HTMLSelectElement;
   private readonly resolutionSelect: HTMLSelectElement;
   private readonly bitrateInput: HTMLInputElement;
@@ -1664,6 +1752,9 @@ class Ui {
     this.showButton = getElement("show-button", HTMLButtonElement);
     this.blurButton = getElement("blur-button", HTMLButtonElement);
     this.unblurButton = getElement("unblur-button", HTMLButtonElement);
+    this.blurStrengthControl = getElement("blur-strength-control", HTMLElement);
+    this.blurStrengthInput = getElement("blur-strength", HTMLInputElement);
+    this.blurStrengthValue = getElement("blur-strength-value", HTMLOutputElement);
     this.frameRateSelect = getElement("quality-frame-rate", HTMLSelectElement);
     this.resolutionSelect = getElement("quality-resolution", HTMLSelectElement);
     this.bitrateInput = getElement("quality-bitrate", HTMLInputElement);
@@ -1705,6 +1796,16 @@ class Ui {
     this.showButton.addEventListener("click", () => this.onhide?.(false));
     this.blurButton.addEventListener("click", () => this.onblur?.(true));
     this.unblurButton.addEventListener("click", () => this.onblur?.(false));
+
+    // Applied while the slider moves: the size of the sent video does not change with the strength
+    this.blurStrengthInput.addEventListener("input", () => {
+      const strength = Number(this.blurStrengthInput.value);
+
+      if (isValidBlurStrength(strength)) {
+        this.blurStrengthValue.value = strength.toString();
+        this.onblurstrength?.(strength);
+      }
+    });
 
     this.frameRateSelect.addEventListener("change", () => {
       const frameRate = Number(this.frameRateSelect.value);
@@ -1896,6 +1997,11 @@ class Ui {
       element === this.copyLinkDone
         ? window.setTimeout(() => this.copyLinkDone.classList.add("hidden"), COPY_FEEDBACK_MS)
         : null;
+  }
+
+  setBlurStrength(strength: number): void {
+    this.blurStrengthInput.value = strength.toString();
+    this.blurStrengthValue.value = strength.toString();
   }
 
   /**
@@ -2143,6 +2249,7 @@ class Ui {
     this.showButton.classList.toggle("hidden", !options.presenting || !options.hidden);
     this.blurButton.classList.toggle("hidden", !options.presenting || !options.canBlur || options.blurred);
     this.unblurButton.classList.toggle("hidden", !options.presenting || !options.canBlur || !options.blurred);
+    this.blurStrengthControl.classList.toggle("hidden", !options.presenting || !options.canBlur || !options.blurred);
     this.blurButton.disabled = options.busy;
     this.unblurButton.disabled = options.busy;
     this.viewerCount.classList.toggle("hidden", !options.presenting);
@@ -2288,6 +2395,8 @@ class RoomController {
 
   private readonly canBlur = isBlurSupported();
 
+  private blurStrength = readBlurStrength();
+
   private quality: QualitySettings;
 
   private readonly statsCollector = new StatsCollector();
@@ -2338,6 +2447,8 @@ class RoomController {
     this.ui.onswitch = () => this.switchScreen();
     this.ui.onhide = (hidden: boolean) => this.setHidden(hidden);
     this.ui.onblur = (blurred: boolean) => this.setBlurred(blurred);
+    this.ui.onblurstrength = (strength: number) => this.changeBlurStrength(strength);
+    this.ui.setBlurStrength(this.blurStrength);
     this.ui.onqualitychange = (quality: QualitySettings) => this.changeQuality(quality);
     this.ui.onvideoresize = () => this.outgoing?.refreshQuality();
     this.ui.onnamechange = (name: string) => this.changeName(name);
@@ -2649,7 +2760,7 @@ class RoomController {
   private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean, replace: string | null): void {
     this.outgoing?.stop();
 
-    const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage, this.quality);
+    const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage, this.quality, this.blurStrength);
     this.outgoing = outgoing;
 
     this.watchCapture(outgoing, mediaStream);
@@ -2848,6 +2959,12 @@ class RoomController {
         this.trackChangeInProgress = false;
         this.render();
       });
+  }
+
+  private changeBlurStrength(strength: number): void {
+    this.blurStrength = strength;
+    writeStorage(getLocalStorage, BLUR_STORAGE_KEY, strength.toString());
+    this.outgoing?.setBlurStrength(strength);
   }
 
   private setHidden(hidden: boolean): void {

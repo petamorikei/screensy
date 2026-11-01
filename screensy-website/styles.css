@@ -83,6 +83,27 @@ button[type="submit"]:hover {
   background-color: rgba(85, 85, 85, 0.95);
 }
 
+/* The blur strength slider, shown in the toolbar while blurred */
+.blur-strength {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background-color: rgba(51, 51, 51, 0.85);
+  font-size: 0.85em;
+}
+
+.blur-strength input {
+  width: 120px;
+}
+
+.blur-strength output {
+  min-width: 2ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 #viewer-count {
   text-shadow: 1px 1px 3px #333333;
   font-variant-numeric: tabular-nums;

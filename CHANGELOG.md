@@ -22,9 +22,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   A "Switch screen" button lets the presenter choose another screen,
     window or tab without interrupting the viewers.
 -   A "Blur screen" button blurs the presentation for the viewers and in the
-    presenter's preview, strongly enough that text cannot be read. It is
-    available in Chrome and Edge, and keeps working while the tab is in the
-    background.
+    presenter's preview. A slider next to it sets the strength, shown as a
+    number, which the browser remembers; the strength follows the pixel
+    density of the screen. It is available in Chrome and Edge, and keeps working while the
+    tab is in the background.
 -   A "Hide screen" button turns the presentation black and silent, for the
     viewers and in the presenter's own preview alike. Viewers see that the
     presenter has hidden their screen.

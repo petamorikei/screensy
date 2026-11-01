@@ -80,6 +80,17 @@
             <button id="unblur-button" class="hidden" type="button">
                 Unblur screen
             </button>
+            <label id="blur-strength-control" class="blur-strength hidden">
+                <input
+                    id="blur-strength"
+                    type="range"
+                    min="4"
+                    max="64"
+                    step="1"
+                    aria-label="Blur strength"
+                />
+                <output id="blur-strength-value" for="blur-strength"></output>
+            </label>
             <button id="stop-button" class="hidden" type="button">
                 Stop presenting
             </button>
