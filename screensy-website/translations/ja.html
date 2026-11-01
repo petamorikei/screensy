@@ -73,9 +73,63 @@
             <button id="stop-button" class="hidden" type="button">
                 配信を停止
             </button>
+            <button
+                id="menu-button"
+                class="hidden"
+                type="button"
+                popovertarget="menu"
+            >
+                メニュー
+            </button>
             <span id="viewer-count" class="hidden">
                 視聴者: <span id="viewer-count-value">0</span>
             </span>
+        </div>
+        <div id="menu" class="menu" popover>
+            <section id="menu-quality" class="menu-section">
+                <h2>画質</h2>
+                <label for="quality-frame-rate">フレームレート（fps）</label>
+                <input
+                    id="quality-frame-rate"
+                    type="number"
+                    min="1"
+                    max="60"
+                    step="1"
+                    required
+                />
+                <label for="quality-resolution">解像度</label>
+                <select id="quality-resolution">
+                    <option value="">元の解像度</option>
+                    <option value="2160">2160p</option>
+                    <option value="1440">1440p</option>
+                    <option value="1080">1080p</option>
+                    <option value="720">720p</option>
+                    <option value="480">480p</option>
+                    <option value="360">360p</option>
+                </select>
+                <label for="quality-bitrate">ビットレートの上限（Mbps）</label>
+                <input
+                    id="quality-bitrate"
+                    type="number"
+                    min="0.1"
+                    max="100"
+                    step="0.1"
+                    required
+                />
+                <label for="quality-degradation">回線が細いときに保つもの</label>
+                <select id="quality-degradation">
+                    <option value="maintain-resolution">
+                        解像度（文字が読みやすい）
+                    </option>
+                    <option value="maintain-framerate">
+                        なめらかさ（動きが滑らか）
+                    </option>
+                    <option value="balanced">バランス</option>
+                </select>
+                <p class="menu-note">
+                    設定はこのブラウザに保存され、配信するときに使われます。
+                </p>
+            </section>
         </div>
         <div id="status" class="status hidden" role="status">
             <p id="status-connecting" class="hidden">接続しています…</p>

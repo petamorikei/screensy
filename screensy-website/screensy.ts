@@ -165,15 +165,36 @@ const RESUME_STORAGE_PREFIX = "screensy.resume.";
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
 const NOTICE_TIMEOUT_MS = 10000;
 
-const DISPLAY_MEDIA_OPTIONS: DisplayMediaStreamOptions = {
-  video: true,
-  audio: {
-    channelCount: { ideal: 2 },
-    sampleRate: { ideal: 192000 },
-    noiseSuppression: { ideal: false },
-    echoCancellation: { ideal: false },
-    autoGainControl: { ideal: false },
-  },
+const QUALITY_STORAGE_KEY = "screensy.quality";
+const MIN_FRAME_RATE = 1;
+const MAX_FRAME_RATE = 60;
+const MIN_BITRATE_MBPS = 0.1;
+const MAX_BITRATE_MBPS = 100;
+const AUDIO_BITRATE = 960_000;
+
+/**
+ * The resolutions to choose from, as the maximum height. null keeps the resolution of the capture.
+ */
+const RESOLUTION_HEIGHTS = [2160, 1440, 1080, 720, 480, 360];
+
+/**
+ * How the presenter's screen is encoded. The menu changes it, and localStorage remembers it.
+ */
+interface QualitySettings {
+  frameRate: number;
+  maxHeight: number | null;
+  maxBitrateMbps: number;
+  /**
+   * What to keep when the bandwidth is short: the resolution, the frame rate, or a balance
+   */
+  degradation: RTCDegradationPreference;
+}
+
+const DEFAULT_QUALITY: QualitySettings = {
+  frameRate: 30,
+  maxHeight: null,
+  maxBitrateMbps: 100,
+  degradation: "maintain-resolution",
 };
 
 type StatusId =
@@ -294,26 +315,108 @@ const getLocalStorage = () => window.localStorage;
 const getSessionStorage = () => window.sessionStorage;
 
 /**
- * Limits the encoding of each sender, once the connection has gathered its ICE candidates.
+ * Reads the quality settings from localStorage. Each invalid or missing value falls back to its default.
  */
-async function applyEncodingParameters(connection: RTCPeerConnection): Promise<void> {
+function readQuality(): QualitySettings {
+  let stored: unknown;
+
+  try {
+    stored = JSON.parse(readStorage(getLocalStorage, QUALITY_STORAGE_KEY) ?? "null");
+  } catch {
+    stored = null;
+  }
+
+  const values = typeof stored === "object" && stored !== null ? (stored as Record<string, unknown>) : {};
+
+  return {
+    frameRate: isValidFrameRate(values.frameRate) ? values.frameRate : DEFAULT_QUALITY.frameRate,
+    maxHeight: isValidMaxHeight(values.maxHeight) ? values.maxHeight : DEFAULT_QUALITY.maxHeight,
+    maxBitrateMbps: isValidBitrate(values.maxBitrateMbps) ? values.maxBitrateMbps : DEFAULT_QUALITY.maxBitrateMbps,
+    degradation: isValidDegradation(values.degradation) ? values.degradation : DEFAULT_QUALITY.degradation,
+  };
+}
+
+function writeQuality(quality: QualitySettings): void {
+  writeStorage(getLocalStorage, QUALITY_STORAGE_KEY, JSON.stringify(quality));
+}
+
+function isValidFrameRate(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= MIN_FRAME_RATE && (value as number) <= MAX_FRAME_RATE;
+}
+
+function isValidMaxHeight(value: unknown): value is number | null {
+  return value === null || RESOLUTION_HEIGHTS.includes(value as number);
+}
+
+function isValidBitrate(value: unknown): value is number {
+  return typeof value === "number" && value >= MIN_BITRATE_MBPS && value <= MAX_BITRATE_MBPS;
+}
+
+function isValidDegradation(value: unknown): value is RTCDegradationPreference {
+  return value === "maintain-resolution" || value === "maintain-framerate" || value === "balanced";
+}
+
+/**
+ * The options for getDisplayMedia. The capture must deliver at least the frame rate that is sent.
+ */
+function displayMediaOptions(quality: QualitySettings): DisplayMediaStreamOptions {
+  return {
+    video: { frameRate: { ideal: quality.frameRate } },
+    audio: {
+      channelCount: { ideal: 2 },
+      sampleRate: { ideal: 192000 },
+      noiseSuppression: { ideal: false },
+      echoCancellation: { ideal: false },
+      autoGainControl: { ideal: false },
+    },
+  };
+}
+
+/**
+ * The content hint of the video track, which steers the encoder like the degradation preference
+ */
+function contentHintFor(degradation: RTCDegradationPreference): string {
+  switch (degradation) {
+    case "maintain-resolution":
+      return "detail";
+    case "maintain-framerate":
+      return "motion";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Applies the quality settings to the senders of a connection. The resolution limit is a scale factor, computed from
+ * the current height of the capture, so it has to be applied again when the captured window is resized.
+ */
+async function applyQuality(connection: RTCPeerConnection, quality: QualitySettings): Promise<void> {
   for (const sender of connection.getSenders()) {
-    if (sender.track == null) {
+    const track = sender.track;
+
+    if (track == null) {
       continue;
     }
 
     const parameters = sender.getParameters();
 
     // https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpSender/setParameters#currently_compatible_implementation
-    if (!parameters.encodings) {
+    if (!parameters.encodings || parameters.encodings.length === 0) {
       parameters.encodings = [{}];
     }
 
-    if (sender.track.kind === "audio") {
-      parameters.encodings[0].maxBitrate = 960000; // 960 Kbps, does gek
-    } else if (sender.track.kind === "video") {
-      parameters.encodings[0].maxFramerate = 30;
-      parameters.encodings[0].maxBitrate = 100000000; // 100 Mbps
+    const encoding = parameters.encodings[0];
+
+    if (track.kind === "audio") {
+      encoding.maxBitrate = AUDIO_BITRATE;
+    } else if (track.kind === "video") {
+      const height = track.getSettings().height;
+
+      encoding.maxFramerate = quality.frameRate;
+      encoding.maxBitrate = Math.round(quality.maxBitrateMbps * 1_000_000);
+      encoding.scaleResolutionDownBy =
+        quality.maxHeight != null && height != null && height > quality.maxHeight ? height / quality.maxHeight : 1;
+      parameters.degradationPreference = quality.degradation;
     }
 
     try {
@@ -460,6 +563,11 @@ interface OutgoingPeer {
   link: PeerLink;
   videoSender: RTCRtpSender;
   audioSender: RTCRtpSender;
+  /**
+   * The last setParameters of this connection. They run one after the other, because each one needs the parameters
+   * that the previous one set.
+   */
+  applyingQuality: Promise<void>;
 }
 
 /**
@@ -532,10 +640,40 @@ class OutgoingStream {
    */
   private lastSync: { participants: ParticipantState[]; selfId: string } | null = null;
 
-  constructor(mediaStream: MediaStream, rtcConfig: RTCConfiguration, sendMessage: MessageSender) {
+  private quality: QualitySettings;
+
+  constructor(
+    mediaStream: MediaStream,
+    rtcConfig: RTCConfiguration,
+    sendMessage: MessageSender,
+    quality: QualitySettings,
+  ) {
+    this.quality = quality;
     this.capture = prepareCapture(mediaStream, false);
+    this.tuneCapture(this.capture);
     this.rtcConfig = rtcConfig;
     this.sendMessage = sendMessage;
+  }
+
+  /**
+   * Applies new quality settings to the capture and to every connection
+   */
+  setQuality(quality: QualitySettings): void {
+    this.quality = quality;
+    this.tuneCapture(this.capture);
+
+    if (this.pending != null) {
+      this.tuneCapture(this.pending);
+    }
+
+    this.applyQualityToPeers();
+  }
+
+  /**
+   * Applies the quality settings again, after the size of the capture changed
+   */
+  refreshQuality(): void {
+    this.applyQualityToPeers();
   }
 
   /**
@@ -582,6 +720,7 @@ class OutgoingStream {
 
     const previous = this.capture;
     const next = prepareCapture(mediaStream, this.isHidden);
+    this.tuneCapture(next);
     this.pending = next;
 
     const peers = [...this.peers.values()];
@@ -629,13 +768,9 @@ class OutgoingStream {
       this.sync(this.lastSync.participants, this.lastSync.selfId);
     }
 
-    // A sender that had no track, such as the audio of a capture without audio, has no limits yet. Connections that
-    // are still gathering get them when they finish.
-    for (const peer of this.peers.values()) {
-      if (peer.link.connection.iceGatheringState === "complete") {
-        void applyEncodingParameters(peer.link.connection);
-      }
-    }
+    // The new capture may have another height, and a sender that had no track, such as the audio of a capture without
+    // audio, has no limits yet
+    this.applyQualityToPeers();
 
     return true;
   }
@@ -732,6 +867,38 @@ class OutgoingStream {
     return [...this.peers.values()].includes(peer) && peer.link.connection.connectionState !== "closed";
   }
 
+  /**
+   * Sets the content hint and the capture frame rate of the video track. Failures are ignored: the encoding limits
+   * still apply.
+   */
+  private tuneCapture(capture: Capture): void {
+    const video = capture.sendVideo;
+
+    if (video == null) {
+      return;
+    }
+
+    video.contentHint = contentHintFor(this.quality.degradation);
+    video.applyConstraints({ frameRate: { ideal: this.quality.frameRate } }).catch((error: unknown) => {
+      console.warn("Could not set the frame rate of the capture.", error);
+    });
+  }
+
+  /**
+   * Connections that are still gathering ICE candidates get the settings when they finish
+   */
+  private applyQualityToPeers(): void {
+    for (const peer of this.peers.values()) {
+      if (peer.link.connection.iceGatheringState === "complete") {
+        this.queueQuality(peer);
+      }
+    }
+  }
+
+  private queueQuality(peer: OutgoingPeer): void {
+    peer.applyingQuality = peer.applyingQuality.then(() => applyQuality(peer.link.connection, this.quality));
+  }
+
   private sendStreamState(): void {
     if (this.currentStreamId != null) {
       this.sendMessage({ type: "streamstate", streamId: this.currentStreamId, hidden: this.isHidden });
@@ -753,7 +920,15 @@ class OutgoingStream {
     const video = connection.addTransceiver(this.capture.sendVideo ?? "video", options);
     const audio = connection.addTransceiver(this.capture.sendAudio ?? "audio", options);
 
-    this.peers.set(participantId, { connectionId, link, videoSender: video.sender, audioSender: audio.sender });
+    const peer: OutgoingPeer = {
+      connectionId,
+      link,
+      videoSender: video.sender,
+      audioSender: audio.sender,
+      applyingQuality: Promise.resolve(),
+    };
+
+    this.peers.set(participantId, peer);
 
     connection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate == null) {
@@ -772,7 +947,7 @@ class OutgoingStream {
 
     connection.onicegatheringstatechange = () => {
       if (connection.iceGatheringState === "complete") {
-        void applyEncodingParameters(connection);
+        this.queueQuality(peer);
       }
     };
 
@@ -903,6 +1078,11 @@ class Ui {
    */
   public onswitch: (() => void) | null = null;
   public onhide: ((hidden: boolean) => void) | null = null;
+  public onqualitychange: ((quality: QualitySettings) => void) | null = null;
+  /**
+   * The size of the video changed, for example when the presenter resizes the shared window
+   */
+  public onvideoresize: (() => void) | null = null;
   public onconfirm: ((name: string) => void) | null = null;
   public oncancel: (() => void) | null = null;
 
@@ -914,6 +1094,16 @@ class Ui {
   private readonly switchButton: HTMLButtonElement;
   private readonly hideButton: HTMLButtonElement;
   private readonly showButton: HTMLButtonElement;
+  private readonly menuButton: HTMLButtonElement;
+  private readonly frameRateInput: HTMLInputElement;
+  private readonly resolutionSelect: HTMLSelectElement;
+  private readonly bitrateInput: HTMLInputElement;
+  private readonly degradationSelect: HTMLSelectElement;
+
+  /**
+   * The settings shown in the menu. An invalid input goes back to them.
+   */
+  private quality: QualitySettings = DEFAULT_QUALITY;
   private readonly viewerCount: HTMLElement;
   private readonly viewerCountValue: HTMLElement;
   private readonly status: HTMLElement;
@@ -930,6 +1120,11 @@ class Ui {
     this.switchButton = getElement("switch-button", HTMLButtonElement);
     this.hideButton = getElement("hide-button", HTMLButtonElement);
     this.showButton = getElement("show-button", HTMLButtonElement);
+    this.menuButton = getElement("menu-button", HTMLButtonElement);
+    this.frameRateInput = getElement("quality-frame-rate", HTMLInputElement);
+    this.resolutionSelect = getElement("quality-resolution", HTMLSelectElement);
+    this.bitrateInput = getElement("quality-bitrate", HTMLInputElement);
+    this.degradationSelect = getElement("quality-degradation", HTMLSelectElement);
     this.viewerCount = getElement("viewer-count", HTMLElement);
     this.viewerCountValue = getElement("viewer-count-value", HTMLElement);
     this.status = getElement("status", HTMLElement);
@@ -942,6 +1137,30 @@ class Ui {
     this.switchButton.addEventListener("click", () => this.onswitch?.());
     this.hideButton.addEventListener("click", () => this.onhide?.(true));
     this.showButton.addEventListener("click", () => this.onhide?.(false));
+
+    this.frameRateInput.addEventListener("change", () => {
+      const frameRate = this.frameRateInput.valueAsNumber;
+      this.changeQuality(this.frameRateInput.checkValidity() && isValidFrameRate(frameRate) ? { frameRate } : null);
+    });
+
+    this.resolutionSelect.addEventListener("change", () => {
+      const maxHeight = this.resolutionSelect.value === "" ? null : Number(this.resolutionSelect.value);
+      this.changeQuality(isValidMaxHeight(maxHeight) ? { maxHeight } : null);
+    });
+
+    this.bitrateInput.addEventListener("change", () => {
+      const maxBitrateMbps = this.bitrateInput.valueAsNumber;
+      this.changeQuality(
+        this.bitrateInput.checkValidity() && isValidBitrate(maxBitrateMbps) ? { maxBitrateMbps } : null,
+      );
+    });
+
+    this.degradationSelect.addEventListener("change", () => {
+      const degradation = this.degradationSelect.value;
+      this.changeQuality(isValidDegradation(degradation) ? { degradation } : null);
+    });
+
+    this.video.addEventListener("resize", () => this.onvideoresize?.());
 
     // The confirm handler must run synchronously in the submit event, so that getDisplayMedia still has the user
     // activation of the click
@@ -972,6 +1191,30 @@ class Ui {
         this.video.play().catch(() => {});
       }
     };
+  }
+
+  /**
+   * Shows the quality settings in the menu
+   */
+  setQuality(quality: QualitySettings): void {
+    this.quality = quality;
+    this.frameRateInput.value = quality.frameRate.toString();
+    this.resolutionSelect.value = quality.maxHeight?.toString() ?? "";
+    this.bitrateInput.value = quality.maxBitrateMbps.toString();
+    this.degradationSelect.value = quality.degradation;
+  }
+
+  /**
+   * Reports a valid change, or puts the inputs back to the current settings
+   */
+  private changeQuality(change: Partial<QualitySettings> | null): void {
+    if (change == null) {
+      this.setQuality(this.quality);
+      return;
+    }
+
+    this.quality = { ...this.quality, ...change };
+    this.onqualitychange?.(this.quality);
   }
 
   /**
@@ -1027,9 +1270,11 @@ class Ui {
     presenting: boolean;
     hidden: boolean;
     switching: boolean;
+    menu: boolean;
     viewers: number;
   }): void {
     this.toolbar.classList.toggle("hidden", !options.visible);
+    this.menuButton.classList.toggle("hidden", !options.menu);
     this.presentButton.classList.toggle("hidden", !options.canPresent);
     this.stopButton.classList.toggle("hidden", !options.presenting);
     this.switchButton.classList.toggle("hidden", !options.presenting);
@@ -1137,6 +1382,8 @@ class RoomController {
    */
   private switchInProgress = false;
 
+  private quality: QualitySettings;
+
   /**
    * @param roomId The ID of the room, as typed in the URL hash
    * @param isCreator Whether this client created the room by opening the page without a hash
@@ -1146,6 +1393,8 @@ class RoomController {
     this.offerToPresent = isCreator;
     this.canPresent = "getDisplayMedia" in navigator.mediaDevices;
     this.ui = new Ui();
+    this.quality = readQuality();
+    this.ui.setQuality(this.quality);
 
     const webSocketProtocol = window.location.protocol === "http:" ? "ws" : "wss";
     this.signaling = new SignalingConnection(`${webSocketProtocol}://${location.host}${location.pathname}`);
@@ -1172,6 +1421,8 @@ class RoomController {
     this.ui.oncancel = () => this.cancelDialog();
     this.ui.onswitch = () => this.switchScreen();
     this.ui.onhide = (hidden: boolean) => this.setHidden(hidden);
+    this.ui.onqualitychange = (quality: QualitySettings) => this.changeQuality(quality);
+    this.ui.onvideoresize = () => this.outgoing?.refreshQuality();
 
     const roomIdWords = roomId.split(/(?=[A-Z])/);
     document.title = `${roomIdWords.join(" ")} | screensy`;
@@ -1414,7 +1665,7 @@ class RoomController {
     let capture: Promise<MediaStream>;
 
     try {
-      capture = navigator.mediaDevices.getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
+      capture = navigator.mediaDevices.getDisplayMedia(displayMediaOptions(this.quality));
     } catch (error) {
       capture = Promise.reject(error);
     }
@@ -1448,7 +1699,7 @@ class RoomController {
   private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean): void {
     this.outgoing?.stop();
 
-    const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage);
+    const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage, this.quality);
     this.outgoing = outgoing;
 
     this.watchCapture(outgoing, mediaStream);
@@ -1491,7 +1742,7 @@ class RoomController {
     let capture: Promise<MediaStream>;
 
     try {
-      capture = navigator.mediaDevices.getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
+      capture = navigator.mediaDevices.getDisplayMedia(displayMediaOptions(this.quality));
     } catch (error) {
       capture = Promise.reject(error);
     }
@@ -1533,6 +1784,12 @@ class RoomController {
         this.switchInProgress = false;
         this.render();
       });
+  }
+
+  private changeQuality(quality: QualitySettings): void {
+    this.quality = quality;
+    writeQuality(quality);
+    this.outgoing?.setQuality(quality);
   }
 
   private setHidden(hidden: boolean): void {
@@ -1670,6 +1927,8 @@ class RoomController {
       presenting: this.outgoing != null,
       hidden: this.outgoing?.hidden ?? false,
       switching: this.switchInProgress,
+      // The menu only has the quality settings so far, which matter to those who can present
+      menu: (ready && this.canPresent) || this.outgoing != null,
       viewers,
     });
   }

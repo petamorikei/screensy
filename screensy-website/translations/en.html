@@ -77,9 +77,66 @@
             <button id="stop-button" class="hidden" type="button">
                 Stop presenting
             </button>
+            <button
+                id="menu-button"
+                class="hidden"
+                type="button"
+                popovertarget="menu"
+            >
+                Menu
+            </button>
             <span id="viewer-count" class="hidden">
                 Viewers: <span id="viewer-count-value">0</span>
             </span>
+        </div>
+        <div id="menu" class="menu" popover>
+            <section id="menu-quality" class="menu-section">
+                <h2>Quality</h2>
+                <label for="quality-frame-rate">Frame rate (fps)</label>
+                <input
+                    id="quality-frame-rate"
+                    type="number"
+                    min="1"
+                    max="60"
+                    step="1"
+                    required
+                />
+                <label for="quality-resolution">Resolution</label>
+                <select id="quality-resolution">
+                    <option value="">Original</option>
+                    <option value="2160">2160p</option>
+                    <option value="1440">1440p</option>
+                    <option value="1080">1080p</option>
+                    <option value="720">720p</option>
+                    <option value="480">480p</option>
+                    <option value="360">360p</option>
+                </select>
+                <label for="quality-bitrate">Maximum bitrate (Mbps)</label>
+                <input
+                    id="quality-bitrate"
+                    type="number"
+                    min="0.1"
+                    max="100"
+                    step="0.1"
+                    required
+                />
+                <label for="quality-degradation">
+                    When the connection is slow, keep
+                </label>
+                <select id="quality-degradation">
+                    <option value="maintain-resolution">
+                        the resolution (sharp text)
+                    </option>
+                    <option value="maintain-framerate">
+                        the frame rate (smooth motion)
+                    </option>
+                    <option value="balanced">a balance of both</option>
+                </select>
+                <p class="menu-note">
+                    These settings are saved in this browser and apply to your
+                    presentations.
+                </p>
+            </section>
         </div>
         <div id="status" class="status hidden" role="status">
             <p id="status-connecting" class="hidden">Connecting…</p>
