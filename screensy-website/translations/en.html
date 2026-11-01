@@ -77,9 +77,56 @@
             <button id="stop-button" class="hidden" type="button">
                 Stop presenting
             </button>
+            <button
+                id="menu-button"
+                class="hidden"
+                type="button"
+                popovertarget="menu"
+            >
+                Menu
+            </button>
             <span id="viewer-count" class="hidden">
                 Viewers: <span id="viewer-count-value">0</span>
             </span>
+        </div>
+        <div id="menu" class="menu" popover>
+            <section id="menu-quality" class="menu-section">
+                <h2>Quality</h2>
+                <label for="quality-frame-rate">Frame rate</label>
+                <select id="quality-frame-rate">
+                    <option value="60">60 fps</option>
+                    <option value="30">30 fps</option>
+                </select>
+                <label for="quality-resolution">Resolution</label>
+                <select id="quality-resolution">
+                    <option value="">Original</option>
+                    <option value="2160">2160p</option>
+                    <option value="1440">1440p</option>
+                    <option value="1080">1080p</option>
+                    <option value="720">720p</option>
+                    <option value="480">480p</option>
+                    <option value="360">360p</option>
+                </select>
+                <label for="quality-bitrate">Maximum bitrate (Mbps)</label>
+                <input
+                    id="quality-bitrate"
+                    type="number"
+                    min="0.1"
+                    max="100"
+                    step="0.1"
+                    required
+                />
+                <label for="quality-degradation">Priority</label>
+                <select id="quality-degradation">
+                    <option value="maintain-resolution">Resolution</option>
+                    <option value="maintain-framerate">Smoothness</option>
+                    <option value="balanced">Balanced</option>
+                </select>
+                <p class="menu-note">
+                    These settings are saved in this browser and apply to your
+                    presentations.
+                </p>
+            </section>
         </div>
         <div id="status" class="status hidden" role="status">
             <p id="status-connecting" class="hidden">Connecting…</p>

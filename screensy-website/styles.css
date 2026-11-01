@@ -120,6 +120,55 @@ button[type="submit"]:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* The popover opens in the top layer. Place it below the toolbar instead of in the middle of the screen. */
+.menu {
+  position: fixed;
+  inset: 54px auto auto 10px;
+  margin: 0;
+  width: min(36ch, calc(100% - 20px));
+  box-sizing: border-box;
+  padding: 16px 18px;
+  border: 1px solid #555555;
+  border-radius: 10px;
+  color: white;
+  background-color: #2a2a2a;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.menu-section h2 {
+  margin: 0 0 10px;
+  font-size: 1.05em;
+}
+
+.menu-section label {
+  display: block;
+  margin: 10px 0 4px;
+  color: #e1e1e1;
+}
+
+.menu-section input,
+.menu-section select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font: inherit;
+  color: white;
+  background-color: #1e1e1e;
+  border: 1px solid #666666;
+  border-radius: 6px;
+}
+
+.menu-section input:invalid {
+  border-color: #e05555;
+}
+
+.menu-note {
+  margin: 12px 0 0;
+  color: #b8b8b8;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
 .notices {
   position: fixed;
   bottom: 70px;

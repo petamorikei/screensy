@@ -159,10 +159,11 @@ const INIT_SCRIPT = `
   };
 
   // Headless Chrome cannot accept the screen picker. __nextCapture sets the size, a fixed color and audio of the next
-  // capture; by default it is 640x360 with changing colors and no audio.
+  // capture, and its frame rate; by default it is 640x360 at 20 fps, with changing colors and no audio.
   window.__captures = [];
   window.__nextCapture = null;
-  navigator.mediaDevices.getDisplayMedia = async () => {
+  navigator.mediaDevices.getDisplayMedia = async (displayOptions) => {
+    window.__displayOptions = displayOptions;
     if (window.__denyCapture) throw new DOMException("denied", "NotAllowedError");
     const options = window.__nextCapture ?? {};
     window.__nextCapture = null;
@@ -173,8 +174,9 @@ const INIT_SCRIPT = `
     canvas.height = height;
     const context = canvas.getContext("2d");
     let i = 0;
-    setInterval(() => { context.fillStyle = options.color ?? "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, width, height); }, 50);
-    const stream = canvas.captureStream(20);
+    const frameRate = options.frameRate ?? 20;
+    setInterval(() => { context.fillStyle = options.color ?? "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, width, height); }, 1000 / frameRate);
+    const stream = canvas.captureStream(frameRate);
     if (options.audio) {
       const audioContext = new AudioContext();
       const oscillator = audioContext.createOscillator();
@@ -438,7 +440,7 @@ async function main() {
     const s = await b.waitFor("video", (s) => s.videoPlaying);
     assert.equal(s.lang, "ja");
     assert.equal(s.status, null);
-    assert.deepEqual(s.toolbar, ["present-button"]);
+    assert.deepEqual(s.toolbar, ["present-button", "menu-button"]);
     await a.waitFor("viewer count 1", (s) => s.viewers === "1");
     await b.shot("3-viewing-ja");
     await a.shot("3b-presenting-1-viewer-en");
@@ -458,7 +460,7 @@ async function main() {
     assert.match(sa.noticeText[0], /Bob/);
     assert.equal(sa.captureLive, false);
     await a.shot("5-taken-over-notice-en");
-    assert.deepEqual(sa.toolbar, ["present-button"]);
+    assert.deepEqual(sa.toolbar, ["present-button", "menu-button"]);
   });
 
   await step("browser 'Stop sharing' (track ended) stops presenting", async () => {
@@ -571,7 +573,7 @@ async function main() {
     await a.waitFor("A waiting", (s) => s.status === "status-waiting");
     const s = await b.state();
     assert.equal(s.status, "status-waiting");
-    assert.deepEqual(s.toolbar, ["present-button"]);
+    assert.deepEqual(s.toolbar, ["present-button", "menu-button"]);
   });
 
   await step("duplicated presenter tab: the seat moves to the duplicate, the original stops", async () => {
@@ -842,6 +844,168 @@ async function main() {
     for (const page of [c, d]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
+  });
+
+  // --- Menu and quality settings ---
+
+  const MENU_VALUES = `({
+    frameRate: document.getElementById("quality-frame-rate").value,
+    resolution: document.getElementById("quality-resolution").value,
+    bitrate: document.getElementById("quality-bitrate").value,
+    degradation: document.getElementById("quality-degradation").value,
+  })`;
+  const setInput = (page, id, value) =>
+    page.eval(`(() => {
+      const element = document.getElementById(${JSON.stringify(id)});
+      element.value = ${JSON.stringify(value)};
+      element.dispatchEvent(new Event("change"));
+    })()`);
+  const videoParameters = `${openSenders("video")}.map((s) => {
+    const p = s.getParameters();
+    return { ...p.encodings[0], degradationPreference: p.degradationPreference, contentHint: s.track.contentHint };
+  })`;
+  async function waitEval(page, desc, expression, predicate, timeout = 10000) {
+    const end = Date.now() + timeout;
+    let last;
+    while (Date.now() < end) {
+      last = await page.eval(expression);
+      if (predicate(last)) return last;
+      await sleep(200);
+    }
+    throw new Error(`${page.label}: timeout waiting for ${desc}\nlast: ${JSON.stringify(last)}`);
+  }
+
+  await step("the menu opens and shows the default quality settings", async () => {
+    const sa = await a.state();
+    assert.ok(sa.toolbar.includes("menu-button"));
+    await a.click("#menu-button");
+    assert.equal(await a.eval(`document.getElementById("menu").matches(":popover-open")`), true);
+    assert.deepEqual(await a.eval(MENU_VALUES), {
+      frameRate: "30",
+      resolution: "",
+      bitrate: "100",
+      degradation: "maintain-resolution",
+    });
+    await a.shot("15-menu-en");
+    await a.eval(`document.getElementById("menu").hidePopover()`);
+  });
+
+  await step("quality settings chosen before presenting apply when presenting", async () => {
+    await setInput(a, "quality-frame-rate", "60");
+    await setInput(a, "quality-resolution", "720");
+    await setInput(a, "quality-bitrate", "5");
+    await setInput(a, "quality-degradation", "maintain-framerate");
+    assert.deepEqual(JSON.parse(await a.eval(`localStorage.getItem("screensy.quality")`)), {
+      frameRate: 60,
+      maxHeight: 720,
+      maxBitrateMbps: 5,
+      degradation: "maintain-framerate",
+    });
+
+    await a.click("#present-button");
+    await a.waitFor("A dialog", (s) => s.dialogOpen);
+    await a.eval("window.__nextCapture = { width: 1920, height: 1080, frameRate: 60 }");
+    await a.submitDialog("Alice");
+    await a.waitFor("A presenting", (s) => s.videoLocal && s.captureLive);
+    assert.equal(await a.eval("window.__displayOptions.video.frameRate.ideal"), 60);
+    await b.waitFor("B viewing", (s) => s.videoPlaying, 15000);
+
+    const [parameters] = await waitEval(
+      a,
+      "the quality on the sender",
+      videoParameters,
+      (list) => list[0]?.maxFramerate === 60,
+    );
+    console.log(`     sender: ${JSON.stringify(parameters)}`);
+    assert.equal(parameters.maxBitrate, 5_000_000);
+    assert.equal(parameters.scaleResolutionDownBy, 1.5);
+    assert.equal(parameters.contentHint, "motion");
+    assert.ok([undefined, "maintain-framerate"].includes(parameters.degradationPreference));
+    await waitColor(b, "B gets at most 720p", (c) => c != null && c.height > 0 && c.height <= 720);
+  });
+
+  await step("changes while presenting apply to every connection, and to viewers who join later", async () => {
+    await setInput(a, "quality-frame-rate", "30");
+    await setInput(a, "quality-resolution", "360");
+    await setInput(a, "quality-bitrate", "2");
+    await waitEval(
+      a,
+      "360p on B's sender",
+      videoParameters,
+      (list) => list.length === 1 && list[0].scaleResolutionDownBy === 3,
+    );
+    c = await newPage(cdp, "C");
+    await c.goto(`${ORIGIN}/${room}`);
+    await c.waitFor("C viewing", (s) => s.videoPlaying, 15000);
+    const list = await waitEval(
+      a,
+      "the same quality for C",
+      videoParameters,
+      (list) => list.length === 2 && list.every((p) => p.scaleResolutionDownBy === 3 && p.maxBitrate === 2_000_000),
+    );
+    assert.ok(list.every((p) => p.maxFramerate === 30));
+    await waitColor(b, "B gets at most 360p", (c) => c != null && c.height > 0 && c.height <= 360);
+
+    // The capture runs at 60 fps; the senders keep to 30
+    await sleep(4000);
+    const fps = await a.eval(`(async () => {
+      const values = [];
+      for (const pc of window.__pcs.filter((pc) => pc.connectionState !== "closed")) {
+        (await pc.getStats()).forEach((r) => { if (r.type === "outbound-rtp" && r.kind === "video") values.push(r.framesPerSecond ?? 0); });
+      }
+      return values;
+    })()`);
+    console.log(`     framesPerSecond: ${JSON.stringify(fps)}`);
+    assert.ok(fps.length === 2 && fps.every((value) => value <= 33), "at most about 30 fps");
+  });
+
+  await step("an invalid value is not applied and the input goes back", async () => {
+    await setInput(a, "quality-frame-rate", "0");
+    await setInput(a, "quality-bitrate", "1000");
+    assert.deepEqual(await a.eval(MENU_VALUES), {
+      frameRate: "30",
+      resolution: "360",
+      bitrate: "2",
+      degradation: "maintain-framerate",
+    });
+    await sleep(500);
+    const list = await a.eval(videoParameters);
+    assert.ok(list.every((p) => p.maxFramerate === 30 && p.maxBitrate === 2_000_000));
+    assert.equal(JSON.parse(await a.eval(`localStorage.getItem("screensy.quality")`)).frameRate, 30);
+  });
+
+  await step("the browser remembers the settings, and invalid stored values fall back to the defaults", async () => {
+    const a3 = await newPageInContext(cdp, "A3", a.browserContextId);
+    await a3.goto(`${ORIGIN}/${room}`);
+    assert.deepEqual(await a3.eval(MENU_VALUES), {
+      frameRate: "30",
+      resolution: "360",
+      bitrate: "2",
+      degradation: "maintain-framerate",
+    });
+    await a3.eval(
+      `localStorage.setItem("screensy.quality", JSON.stringify({ frameRate: 45, maxHeight: 720, degradation: "fast" }))`,
+    );
+    await a3.reload();
+    assert.deepEqual(await a3.eval(MENU_VALUES), {
+      frameRate: "30",
+      resolution: "720",
+      bitrate: "100",
+      degradation: "maintain-resolution",
+    });
+    await a3.eval(`localStorage.setItem("screensy.quality", "{broken")`);
+    await a3.reload();
+    assert.deepEqual(await a3.eval(MENU_VALUES), {
+      frameRate: "30",
+      resolution: "",
+      bitrate: "100",
+      degradation: "maintain-resolution",
+    });
+    for (const page of [a3, c]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+    await a.click("#stop-button");
+    await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");
