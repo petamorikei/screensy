@@ -79,7 +79,6 @@
             </button>
             <button
                 id="menu-button"
-                class="hidden"
                 type="button"
                 popovertarget="menu"
             >
@@ -90,6 +89,38 @@
             </span>
         </div>
         <div id="menu" class="menu" popover>
+            <section id="menu-link" class="menu-section">
+                <h2>Link</h2>
+                <div class="link-row">
+                    <input
+                        id="room-link"
+                        type="text"
+                        readonly
+                        aria-label="Link to this room"
+                    />
+                    <button id="copy-link-button" type="button">Copy</button>
+                </div>
+                <p id="copy-link-done" class="menu-feedback hidden" role="status">
+                    Copied.
+                </p>
+                <p id="copy-link-failed" class="menu-feedback hidden" role="status">
+                    Could not copy. Copy the selected link instead.
+                </p>
+            </section>
+            <section id="menu-name" class="menu-section">
+                <h2><label for="menu-name-input">Your name</label></h2>
+                <input
+                    id="menu-name-input"
+                    type="text"
+                    maxlength="32"
+                    autocomplete="nickname"
+                />
+                <p class="menu-note">Others see this name. It is saved in this browser.</p>
+            </section>
+            <section id="menu-participants" class="menu-section">
+                <h2>Participants (<span class="count-slot">0</span>)</h2>
+                <ul id="participant-list" class="participant-list"></ul>
+            </section>
             <section id="menu-quality" class="menu-section">
                 <h2>Quality</h2>
                 <label for="quality-frame-rate">Frame rate</label>
@@ -243,6 +274,9 @@
             </form>
         </dialog>
         <span id="text-anonymous" class="hidden">Someone</span>
+        <span id="text-you" class="hidden">you</span>
+        <span id="text-presenting" class="hidden">presenting</span>
+        <span id="text-reconnecting" class="hidden">reconnecting</span>
         <video
             id="stream"
             autoplay="autoplay"

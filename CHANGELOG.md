@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     bitrate, and the priority when the connection is slow (resolution,
     smoothness or a balance). The browser remembers them, and changes apply
     at once.
+-   The menu is available to everyone. It shows the link of the room with a
+    copy button, lets viewers set their name too, and lists the participants,
+    marking who presents, who is reconnecting, and yourself.
 -   Viewers see the state of the room: waiting for a presenter, connecting,
     and switching to a new presenter. When the presenter is away, viewers see
     whether they left the page, lost their connection or are resuming, with
