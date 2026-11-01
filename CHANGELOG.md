@@ -26,7 +26,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   A menu with quality settings for presenting: the frame rate (60 or 30
     fps), the resolution (the original one or a common height), the maximum
     bitrate, and the priority when the connection is slow (resolution,
-    smoothness or a balance). The browser remembers them, and changes apply
+    frame rate or a balance). The browser remembers them, and changes apply
     at once.
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
