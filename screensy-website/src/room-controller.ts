@@ -33,7 +33,11 @@ export class RoomController {
   private readonly roomId: string;
   private readonly ui: Ui;
   private readonly signaling: SignalingConnection;
-  private readonly rtcConfig: RTCConfiguration;
+  /**
+   * The STUN and TURN servers from the latest "welcome". A TURN server comes with a temporary username, so new
+   * connections always take the latest one.
+   */
+  private rtcConfig: RTCConfiguration = { iceServers: [] };
   private readonly canPresent: boolean;
   private readonly sendMessage: MessageSender;
 
@@ -117,17 +121,6 @@ export class RoomController {
     const webSocketProtocol = window.location.protocol === "http:" ? "ws" : "wss";
     this.signaling = new SignalingConnection(`${webSocketProtocol}://${location.host}${location.pathname}`);
     this.sendMessage = (message) => this.signaling.send(message);
-
-    this.rtcConfig = {
-      iceServers: [
-        { urls: `stun:${location.hostname}` },
-        {
-          urls: `turn:${location.hostname}`,
-          username: "screensy",
-          credential: "screensy",
-        },
-      ],
-    };
 
     this.signaling.onopen = () => this.join();
     this.signaling.onclose = () => this.render();
@@ -241,6 +234,7 @@ export class RoomController {
   private handleWelcome(message: MessageWelcome): void {
     this.selfId = message.selfId;
     this.maxPresenters = message.maxPresenters;
+    this.rtcConfig = { iceServers: message.iceServers };
     writeStorage(getSessionStorage, this.resumeStorageKey, message.resumeToken);
 
     // The connection ID changed, so every presenter opens new connections to this client
@@ -453,7 +447,13 @@ export class RoomController {
   private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean, replace: string | null): void {
     this.outgoing?.stop();
 
-    const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage, this.quality, this.blurStrength);
+    const outgoing = new OutgoingStream(
+      mediaStream,
+      () => this.rtcConfig,
+      this.sendMessage,
+      this.quality,
+      this.blurStrength,
+    );
     this.outgoing = outgoing;
 
     this.watchCapture(outgoing, mediaStream);

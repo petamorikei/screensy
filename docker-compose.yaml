@@ -6,6 +6,13 @@ services:
       context: .
       dockerfile: screensy-rendezvous/Dockerfile
     restart: unless-stopped
+    # Set in ".env" (see ".env.example"). Names without a value are only
+    # passed when they are set, so the server keeps its defaults otherwise.
+    environment:
+      - SCREENSY_TURN_SECRET=${SCREENSY_TURN_SECRET:?Set SCREENSY_TURN_SECRET in .env, see .env.example}
+      - SCREENSY_STUN_URLS
+      - SCREENSY_TURN_URLS
+      - SCREENSY_TURN_TTL_S
   website:
     build:
       context: .
@@ -26,7 +33,10 @@ services:
     # large port ranges
     network_mode: "host"
     # Override the image's default command, which also passes an auto-detected
-    # --external-ip and thereby conflicts with the one in turnserver.conf
-    command: ["--log-file=stdout"]
+    # --external-ip and thereby conflicts with the one in turnserver.conf. The
+    # shared secret of the temporary TURN usernames comes from ".env".
+    command:
+      - "--log-file=stdout"
+      - "--static-auth-secret=${SCREENSY_TURN_SECRET:?Set SCREENSY_TURN_SECRET in .env, see .env.example}"
     volumes:
       - ./turnserver.conf:/etc/coturn/turnserver.conf

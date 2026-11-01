@@ -1,7 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import type {
   ClientMessage,
   DisconnectReason,
+  IceServer,
   MessageJoin,
   MessageRoomState,
   MessageSignalToServer,
@@ -20,6 +22,21 @@ const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number.parseInt(process.env[name] ?? "", 10);
 
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+};
+
+/**
+ * Reads a comma-separated list from an environment variable: the fallback if the variable is not set, and no entries
+ * if it is empty
+ */
+const listFromEnv = (name: string, fallback: string[]): string[] => {
+  const value = process.env[name];
+
+  return value === undefined
+    ? fallback
+    : value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== "");
 };
 
 const PORT = 4000;
@@ -58,6 +75,26 @@ const MAX_NAME_LENGTH = 32;
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 
 /**
+ * The STUN and TURN servers that clients use. "{host}" stands for the host name that the client connected to, like
+ * location.hostname on the page. An empty variable turns them off, for example SCREENSY_STUN_URLS="" where the host
+ * runs no STUN server.
+ */
+const STUN_URLS = listFromEnv("SCREENSY_STUN_URLS", ["stun:{host}"]);
+const TURN_URLS = listFromEnv("SCREENSY_TURN_URLS", ["turn:{host}"]);
+
+/**
+ * The secret shared with coturn (use-auth-secret, static-auth-secret). The server signs a temporary TURN username with
+ * it for every "welcome". Without it, clients get no TURN server.
+ */
+const TURN_SECRET = process.env.SCREENSY_TURN_SECRET || null;
+
+/**
+ * How long a temporary TURN username stays valid. A connection refreshes its relay with the username it started with,
+ * so this has to outlast a long presentation.
+ */
+const TURN_TTL_S = numberFromEnv("SCREENSY_TURN_TTL_S", 86_400);
+
+/**
  * A presenter seat as the room stores it. The remaining grace period is computed from the participant when sent.
  */
 type Presenter = Omit<PresenterState, "graceRemainingMs">;
@@ -83,13 +120,13 @@ const main = (): void => {
   const server = new Server();
   const alive = new WeakSet<WebSocket>();
 
-  webSocketServer.on("connection", (socket: WebSocket) => {
+  webSocketServer.on("connection", (socket: WebSocket, request: IncomingMessage) => {
     alive.add(socket);
     socket.on("pong", () => alive.add(socket));
     // ws emits "error" (and then "close") for protocol violations such as an oversized payload. Without a listener,
     // the error would crash the process.
     socket.on("error", () => {});
-    server.onConnection(socket);
+    server.onConnection(socket, hostnameOf(request.headers.host));
   });
 
   const heartbeat = setInterval(() => {
@@ -106,6 +143,10 @@ const main = (): void => {
 
   webSocketServer.on("close", () => clearInterval(heartbeat));
 
+  if (TURN_SECRET == null) {
+    console.warn("SCREENSY_TURN_SECRET is not set, so clients get no TURN server.");
+  }
+
   console.log(`Server started on port ${PORT}`);
 };
 
@@ -114,8 +155,10 @@ class Server {
 
   /**
    * Handles a new WebSocket connection. The first valid message must be a "join".
+   *
+   * @param hostname The host name that the client connected to, or null if its Host header is missing or invalid
    */
-  onConnection(socket: WebSocket): void {
+  onConnection(socket: WebSocket, hostname: string | null): void {
     const onFirstMessage = (data: RawData) => {
       const message = parseJoin(data);
 
@@ -134,7 +177,7 @@ class Server {
         this.rooms.set(roomId, room);
       }
 
-      room.join(socket, message);
+      room.join(socket, message, hostname);
     };
 
     socket.on("message", onFirstMessage);
@@ -164,7 +207,7 @@ class Room {
   /**
    * Adds a socket to the room, either as a new participant or as the participant of its resume token.
    */
-  join(socket: WebSocket, message: MessageJoin): void {
+  join(socket: WebSocket, message: MessageJoin, hostname: string | null): void {
     let participant = this.findByResumeToken(message.resumeToken);
 
     if (participant == null) {
@@ -198,6 +241,7 @@ class Room {
       connectionId: participant.connectionId,
       resumeToken: participant.resumeToken,
       maxPresenters: MAX_PRESENTERS,
+      iceServers: iceServersFor(hostname, participant.id),
     });
 
     this.broadcastState();
@@ -482,6 +526,55 @@ const parseJoin = (data: RawData): MessageJoin | null => JoinSchema.safeParse(pa
  */
 const parseClientMessage = (data: RawData): ClientMessage | null =>
   ClientMessageSchema.safeParse(parseMessage(data)).data ?? null;
+
+/**
+ * The host name of a Host header, without the port, or null if it is missing or invalid. ws lets through values such
+ * as "[", on which new URL throws: this must never throw, because one bad request would stop the whole server.
+ */
+const hostnameOf = (host: string | undefined): string | null => {
+  if (host == null || host === "") {
+    return null;
+  }
+
+  try {
+    const hostname = new URL(`http://${host}`).hostname;
+    return hostname === "" ? null : hostname;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The STUN and TURN servers for a client. The TURN username follows the TURN REST API of coturn: the time it expires
+ * (in Unix seconds), a colon and a name, signed with HMAC-SHA1 and the shared secret.
+ */
+const iceServersFor = (hostname: string | null, participantId: string): IceServer[] => {
+  // URLs with "{host}" are left out when the host name is unknown
+  const resolve = (urls: string[]): string[] =>
+    urls.flatMap((url) => {
+      if (!url.includes("{host}")) {
+        return [url];
+      }
+
+      return hostname == null ? [] : [url.replaceAll("{host}", hostname)];
+    });
+
+  const servers: IceServer[] = [];
+  const stun = resolve(STUN_URLS);
+  const turn = resolve(TURN_URLS);
+
+  if (stun.length > 0) {
+    servers.push({ urls: stun });
+  }
+
+  if (TURN_SECRET != null && turn.length > 0) {
+    const username = `${Math.floor(Date.now() / 1000) + TURN_TTL_S}:${participantId}`;
+    const credential = createHmac("sha1", TURN_SECRET).update(username).digest("base64");
+    servers.push({ urls: turn, username, credential });
+  }
+
+  return servers;
+};
 
 /**
  * Trims the name and limits it to MAX_NAME_LENGTH code points.
