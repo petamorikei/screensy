@@ -197,7 +197,7 @@ const STATUS_IDS: StatusId[] = [
   "status-presenter-resuming",
 ];
 
-type NoticeId = "notice-taken-over" | "notice-connection-lost" | "notice-access-denied";
+type NoticeId = "notice-taken-over" | "notice-moved-to-other-tab" | "notice-connection-lost" | "notice-access-denied";
 
 type DialogMode = "start" | "resume";
 
@@ -1014,8 +1014,32 @@ class RoomController {
       case "replaced":
         // Another tab uses this participant. Join as a new participant when the server closes this socket.
         writeStorage(getSessionStorage, this.resumeStorageKey, null);
+        this.handleReplaced();
         break;
     }
+  }
+
+  /**
+   * The seat, if this client had one, now belongs to the other tab, for example a duplicate of this one. Stop here
+   * instead of waiting for the next room state, which would report the seat as taken over by this same person.
+   */
+  private handleReplaced(): void {
+    const hadSeat = this.outgoing != null || this.dialogMode === "resume";
+
+    this.outgoing?.stop();
+    this.outgoing = null;
+    this.resolveOnNextState = false;
+
+    if (this.dialogMode === "resume") {
+      this.dialogMode = null;
+      this.ui.closeDialog();
+    }
+
+    if (hadSeat) {
+      this.ui.showNotice("notice-moved-to-other-tab");
+    }
+
+    this.render();
   }
 
   private handleWelcome(message: MessageWelcome): void {
