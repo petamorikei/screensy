@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.
+-   Someone without a name is shown as a numbered guest, such as "Guest 3",
+    numbered by the order of joining and the same on every screen.
 -   Viewers see the state of the room: waiting for a presenter, connecting,
     and switching to a new presenter. When the presenter is away, viewers see
     whether they left the page, lost their connection or are resuming, with

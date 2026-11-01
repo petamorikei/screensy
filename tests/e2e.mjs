@@ -1086,12 +1086,14 @@ async function main() {
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     await a.waitFor("A presenting", (s) => s.videoLocal);
+    // E has no name: a guest numbered by its participant ID
+    const guestId = await b.eval(`window.__roomState.participants.find((p) => p.name === "").id`);
     const expected = {
       count: "3",
       list: [
         { name: "Alice", badges: ["配信中"] },
         { name: "Bobby", badges: ["あなた"] },
-        { name: "誰か", badges: [] },
+        { name: `ゲスト ${Number(guestId) + 1}`, badges: [] },
       ],
     };
     await waitEval(b, "B's list", PARTICIPANTS, (p) => JSON.stringify(p) === JSON.stringify(expected));

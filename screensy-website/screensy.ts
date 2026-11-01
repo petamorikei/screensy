@@ -1238,12 +1238,14 @@ class Ui {
   /**
    * Lists the participants in the menu. Names come from other people, so they are only ever set as text.
    */
-  showParticipants(participants: { name: string; you: boolean; presenting: boolean; reconnecting: boolean }[]): void {
+  showParticipants(
+    participants: { id: string; name: string; you: boolean; presenting: boolean; reconnecting: boolean }[],
+  ): void {
     const items = participants.map((participant) => {
       const item = document.createElement("li");
       const name = document.createElement("span");
       name.className = "participant-name";
-      name.textContent = this.displayName(participant.name);
+      name.textContent = this.displayName(participant.name, participant.id);
       item.append(name);
 
       const badges: string[] = [];
@@ -1337,8 +1339,11 @@ class Ui {
   /**
    * Returns the name to display for a participant.
    */
-  displayName(name: string | undefined): string {
-    return name != null && name !== "" ? name : this.anonymousName;
+  displayName(name: string | undefined, participantId: string): string {
+    // Someone without a name is a guest numbered by the order of joining, the same on every screen
+    return name != null && name !== ""
+      ? name
+      : this.anonymousName.replace("{number}", (Number(participantId) + 1).toString());
   }
 
   setVideo(stream: MediaStream | null, isLocal: boolean): void {
@@ -1930,6 +1935,7 @@ class RoomController {
 
     this.ui.showParticipants(
       participants.map((participant) => ({
+        id: participant.id,
         name: participant.name,
         you: participant.id === selfId,
         presenting: seats.has(participant.id),
@@ -1994,7 +2000,7 @@ class RoomController {
 
   private nameOf(participantId: string): string {
     const participant = this.state?.participants.find((participant) => participant.id === participantId);
-    return this.ui.displayName(participant?.name);
+    return this.ui.displayName(participant?.name, participantId);
   }
 
   /**
