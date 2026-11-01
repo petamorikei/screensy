@@ -92,15 +92,11 @@
         <div id="menu" class="menu" popover>
             <section id="menu-quality" class="menu-section">
                 <h2>Quality</h2>
-                <label for="quality-frame-rate">Frame rate (fps)</label>
-                <input
-                    id="quality-frame-rate"
-                    type="number"
-                    min="1"
-                    max="60"
-                    step="1"
-                    required
-                />
+                <label for="quality-frame-rate">Frame rate</label>
+                <select id="quality-frame-rate">
+                    <option value="60">60 fps</option>
+                    <option value="30">30 fps</option>
+                </select>
                 <label for="quality-resolution">Resolution</label>
                 <select id="quality-resolution">
                     <option value="">Original</option>
@@ -120,17 +116,11 @@
                     step="0.1"
                     required
                 />
-                <label for="quality-degradation">
-                    When the connection is slow, keep
-                </label>
+                <label for="quality-degradation">Priority</label>
                 <select id="quality-degradation">
-                    <option value="maintain-resolution">
-                        the resolution (sharp text)
-                    </option>
-                    <option value="maintain-framerate">
-                        the frame rate (smooth motion)
-                    </option>
-                    <option value="balanced">a balance of both</option>
+                    <option value="maintain-resolution">Resolution</option>
+                    <option value="maintain-framerate">Smoothness</option>
+                    <option value="balanced">Balanced</option>
                 </select>
                 <p class="menu-note">
                     These settings are saved in this browser and apply to your

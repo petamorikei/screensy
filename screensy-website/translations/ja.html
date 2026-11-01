@@ -88,15 +88,11 @@
         <div id="menu" class="menu" popover>
             <section id="menu-quality" class="menu-section">
                 <h2>画質</h2>
-                <label for="quality-frame-rate">フレームレート（fps）</label>
-                <input
-                    id="quality-frame-rate"
-                    type="number"
-                    min="1"
-                    max="60"
-                    step="1"
-                    required
-                />
+                <label for="quality-frame-rate">フレームレート</label>
+                <select id="quality-frame-rate">
+                    <option value="60">60 fps</option>
+                    <option value="30">30 fps</option>
+                </select>
                 <label for="quality-resolution">解像度</label>
                 <select id="quality-resolution">
                     <option value="">元の解像度</option>
@@ -116,14 +112,10 @@
                     step="0.1"
                     required
                 />
-                <label for="quality-degradation">回線が細いときに保つもの</label>
+                <label for="quality-degradation">優先</label>
                 <select id="quality-degradation">
-                    <option value="maintain-resolution">
-                        解像度（文字が読みやすい）
-                    </option>
-                    <option value="maintain-framerate">
-                        なめらかさ（動きが滑らか）
-                    </option>
+                    <option value="maintain-resolution">解像度</option>
+                    <option value="maintain-framerate">なめらかさ</option>
                     <option value="balanced">バランス</option>
                 </select>
                 <p class="menu-note">

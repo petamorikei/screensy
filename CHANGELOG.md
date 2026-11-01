@@ -23,10 +23,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   A "Hide screen" button turns the presentation black and silent, for the
     viewers and in the presenter's own preview alike. Viewers see that the
     presenter has hidden their screen.
--   A menu with quality settings for presenting: the frame rate, the
-    resolution (the original one or a common height), the maximum bitrate,
-    and whether to keep the resolution or the frame rate when the connection
-    is slow. The browser remembers them, and changes apply at once.
+-   A menu with quality settings for presenting: the frame rate (60 or 30
+    fps), the resolution (the original one or a common height), the maximum
+    bitrate, and the priority when the connection is slow (resolution,
+    smoothness or a balance). The browser remembers them, and changes apply
+    at once.
 -   Viewers see the state of the room: waiting for a presenter, connecting,
     and switching to a new presenter. When the presenter is away, viewers see
     whether they left the page, lost their connection or are resuming, with

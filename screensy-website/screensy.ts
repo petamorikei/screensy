@@ -166,8 +166,11 @@ const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
 const NOTICE_TIMEOUT_MS = 10000;
 
 const QUALITY_STORAGE_KEY = "screensy.quality";
-const MIN_FRAME_RATE = 1;
-const MAX_FRAME_RATE = 60;
+
+/**
+ * The frame rates to choose from
+ */
+const FRAME_RATES = [60, 30];
 const MIN_BITRATE_MBPS = 0.1;
 const MAX_BITRATE_MBPS = 100;
 const AUDIO_BITRATE = 960_000;
@@ -341,7 +344,7 @@ function writeQuality(quality: QualitySettings): void {
 }
 
 function isValidFrameRate(value: unknown): value is number {
-  return Number.isInteger(value) && (value as number) >= MIN_FRAME_RATE && (value as number) <= MAX_FRAME_RATE;
+  return FRAME_RATES.includes(value as number);
 }
 
 function isValidMaxHeight(value: unknown): value is number | null {
@@ -1095,7 +1098,7 @@ class Ui {
   private readonly hideButton: HTMLButtonElement;
   private readonly showButton: HTMLButtonElement;
   private readonly menuButton: HTMLButtonElement;
-  private readonly frameRateInput: HTMLInputElement;
+  private readonly frameRateSelect: HTMLSelectElement;
   private readonly resolutionSelect: HTMLSelectElement;
   private readonly bitrateInput: HTMLInputElement;
   private readonly degradationSelect: HTMLSelectElement;
@@ -1121,7 +1124,7 @@ class Ui {
     this.hideButton = getElement("hide-button", HTMLButtonElement);
     this.showButton = getElement("show-button", HTMLButtonElement);
     this.menuButton = getElement("menu-button", HTMLButtonElement);
-    this.frameRateInput = getElement("quality-frame-rate", HTMLInputElement);
+    this.frameRateSelect = getElement("quality-frame-rate", HTMLSelectElement);
     this.resolutionSelect = getElement("quality-resolution", HTMLSelectElement);
     this.bitrateInput = getElement("quality-bitrate", HTMLInputElement);
     this.degradationSelect = getElement("quality-degradation", HTMLSelectElement);
@@ -1138,9 +1141,9 @@ class Ui {
     this.hideButton.addEventListener("click", () => this.onhide?.(true));
     this.showButton.addEventListener("click", () => this.onhide?.(false));
 
-    this.frameRateInput.addEventListener("change", () => {
-      const frameRate = this.frameRateInput.valueAsNumber;
-      this.changeQuality(this.frameRateInput.checkValidity() && isValidFrameRate(frameRate) ? { frameRate } : null);
+    this.frameRateSelect.addEventListener("change", () => {
+      const frameRate = Number(this.frameRateSelect.value);
+      this.changeQuality(isValidFrameRate(frameRate) ? { frameRate } : null);
     });
 
     this.resolutionSelect.addEventListener("change", () => {
@@ -1198,7 +1201,7 @@ class Ui {
    */
   setQuality(quality: QualitySettings): void {
     this.quality = quality;
-    this.frameRateInput.value = quality.frameRate.toString();
+    this.frameRateSelect.value = quality.frameRate.toString();
     this.resolutionSelect.value = quality.maxHeight?.toString() ?? "";
     this.bitrateInput.value = quality.maxBitrateMbps.toString();
     this.degradationSelect.value = quality.degradation;
