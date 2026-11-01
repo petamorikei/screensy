@@ -116,6 +116,11 @@
                 <h2>参加者（<span class="count-slot">0</span>）</h2>
                 <ul id="participant-list" class="participant-list"></ul>
             </section>
+            <section id="menu-stats" class="menu-section">
+                <h2>接続</h2>
+                <p id="stats-empty" class="menu-note">統計はありません。配信を送受信していません。</p>
+                <div id="stats-list"></div>
+            </section>
             <section id="menu-quality" class="menu-section">
                 <h2>画質</h2>
                 <label for="quality-frame-rate">フレームレート</label>
@@ -261,6 +266,47 @@
         <span id="text-you" class="hidden">あなた</span>
         <span id="text-presenting" class="hidden">配信中</span>
         <span id="text-reconnecting" class="hidden">再接続待ち</span>
+        <template id="stats-template">
+            <div class="stats-entry">
+                <p class="stats-name"></p>
+                <dl class="stats">
+                    <dt>状態</dt>
+                    <dd data-field="state"></dd>
+                    <dt>経路</dt>
+                    <dd data-field="route"></dd>
+                    <dt>映像</dt>
+                    <dd data-field="video"></dd>
+                    <dt>解像度</dt>
+                    <dd data-field="resolution"></dd>
+                    <dt>フレームレート</dt>
+                    <dd data-field="frameRate"></dd>
+                    <dt>ビットレート</dt>
+                    <dd data-field="bitrate"></dd>
+                    <dt>音声</dt>
+                    <dd data-field="audio"></dd>
+                    <dt>往復時間</dt>
+                    <dd data-field="roundTripTime"></dd>
+                    <dt>パケットロス</dt>
+                    <dd data-field="packetLoss"></dd>
+                    <dt data-send-only>画質が下がっている理由</dt>
+                    <dd data-field="limitation" data-send-only></dd>
+                </dl>
+            </div>
+        </template>
+        <div id="stats-names" class="hidden">
+            <span data-state="new">準備中</span>
+            <span data-state="connecting">接続中</span>
+            <span data-state="connected">接続済み</span>
+            <span data-state="disconnected">切断</span>
+            <span data-state="failed">失敗</span>
+            <span data-state="closed">終了</span>
+            <span data-route="direct">直接</span>
+            <span data-route="relay">TURN 経由</span>
+            <span data-limitation="none">なし</span>
+            <span data-limitation="bandwidth">回線</span>
+            <span data-limitation="cpu">CPU</span>
+            <span data-limitation="other">その他</span>
+        </div>
         <video
             id="stream"
             autoplay="autoplay"

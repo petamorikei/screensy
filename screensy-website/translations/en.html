@@ -120,6 +120,11 @@
                 <h2>Participants (<span class="count-slot">0</span>)</h2>
                 <ul id="participant-list" class="participant-list"></ul>
             </section>
+            <section id="menu-stats" class="menu-section">
+                <h2>Connection</h2>
+                <p id="stats-empty" class="menu-note">No statistics. Nothing is being received or sent.</p>
+                <div id="stats-list"></div>
+            </section>
             <section id="menu-quality" class="menu-section">
                 <h2>Quality</h2>
                 <label for="quality-frame-rate">Frame rate</label>
@@ -276,6 +281,47 @@
         <span id="text-you" class="hidden">you</span>
         <span id="text-presenting" class="hidden">presenting</span>
         <span id="text-reconnecting" class="hidden">reconnecting</span>
+        <template id="stats-template">
+            <div class="stats-entry">
+                <p class="stats-name"></p>
+                <dl class="stats">
+                    <dt>State</dt>
+                    <dd data-field="state"></dd>
+                    <dt>Route</dt>
+                    <dd data-field="route"></dd>
+                    <dt>Video</dt>
+                    <dd data-field="video"></dd>
+                    <dt>Resolution</dt>
+                    <dd data-field="resolution"></dd>
+                    <dt>Frame rate</dt>
+                    <dd data-field="frameRate"></dd>
+                    <dt>Bitrate</dt>
+                    <dd data-field="bitrate"></dd>
+                    <dt>Audio</dt>
+                    <dd data-field="audio"></dd>
+                    <dt>Round trip</dt>
+                    <dd data-field="roundTripTime"></dd>
+                    <dt>Packet loss</dt>
+                    <dd data-field="packetLoss"></dd>
+                    <dt data-send-only>Quality limited by</dt>
+                    <dd data-field="limitation" data-send-only></dd>
+                </dl>
+            </div>
+        </template>
+        <div id="stats-names" class="hidden">
+            <span data-state="new">New</span>
+            <span data-state="connecting">Connecting</span>
+            <span data-state="connected">Connected</span>
+            <span data-state="disconnected">Disconnected</span>
+            <span data-state="failed">Failed</span>
+            <span data-state="closed">Closed</span>
+            <span data-route="direct">Direct</span>
+            <span data-route="relay">Through TURN</span>
+            <span data-limitation="none">Nothing</span>
+            <span data-limitation="bandwidth">Bandwidth</span>
+            <span data-limitation="cpu">CPU</span>
+            <span data-limitation="other">Other</span>
+        </div>
         <video
             id="stream"
             autoplay="autoplay"

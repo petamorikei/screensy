@@ -165,6 +165,12 @@ const RESUME_STORAGE_PREFIX = "screensy.resume.";
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
 const NOTICE_TIMEOUT_MS = 10000;
 const COPY_FEEDBACK_MS = 2000;
+const STATS_INTERVAL_MS = 1000;
+
+/**
+ * Shown for a value that the browser does not report
+ */
+const NO_VALUE = "—";
 
 const QUALITY_STORAGE_KEY = "screensy.quality";
 
@@ -276,6 +282,16 @@ function setNameSlots(element: Element, name: string): void {
   for (const slot of element.querySelectorAll(".name-slot")) {
     slot.textContent = name;
   }
+}
+
+function formatBitrate(bitsPerSecond: number | null): string {
+  if (bitsPerSecond == null) {
+    return NO_VALUE;
+  }
+
+  return bitsPerSecond >= 1_000_000
+    ? `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbps`
+    : `${Math.round(bitsPerSecond / 1000)} kbps`;
 }
 
 /**
@@ -899,6 +915,13 @@ class OutgoingStream {
     }
   }
 
+  /**
+   * The connection to each recipient, for the statistics
+   */
+  connections(): { participantId: string; connection: RTCPeerConnection }[] {
+    return [...this.peers].map(([participantId, peer]) => ({ participantId, connection: peer.link.connection }));
+  }
+
   private queueQuality(peer: OutgoingPeer): void {
     peer.applyingQuality = peer.applyingQuality.then(() => applyQuality(peer.link.connection, this.quality));
   }
@@ -986,6 +1009,160 @@ class OutgoingStream {
 }
 
 /**
+ * What the menu shows about one connection. Values that the browser does not report are null.
+ */
+interface ConnectionStats {
+  state: RTCPeerConnectionState;
+  route: "direct" | "relay" | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+  /**
+   * Video and audio together, in bits per second, since the previous sample
+   */
+  bitrate: number | null;
+  /**
+   * In seconds
+   */
+  roundTripTime: number | null;
+  /**
+   * The share of lost packets since the previous sample, from 0 to 1
+   */
+  packetLoss: number | null;
+  /**
+   * Why the encoder lowers the quality: "none", "bandwidth", "cpu" or "other". Only for sent streams.
+   */
+  limitation: string | null;
+}
+
+type StatsDirection = "receive" | "send";
+
+type StatsEntry = Record<string, unknown>;
+
+function statNumber(entry: StatsEntry | undefined, key: string): number | null {
+  const value = entry?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function statString(entry: StatsEntry | undefined, key: string): string | null {
+  const value = entry?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Reads getStats() of connections. It keeps the previous sample of each connection, to turn the byte and packet
+ * counters into a bitrate and a loss rate.
+ */
+class StatsCollector {
+  private readonly previous = new WeakMap<
+    RTCPeerConnection,
+    { timestamp: number; bytes: number; lost: number; packets: number }
+  >();
+
+  async collect(connection: RTCPeerConnection, direction: StatsDirection): Promise<ConnectionStats> {
+    const report = await connection.getStats();
+    const entries = new Map<string, StatsEntry>();
+    report.forEach((entry: StatsEntry, id: string) => {
+      entries.set(id, entry);
+    });
+
+    const rtpType = direction === "receive" ? "inbound-rtp" : "outbound-rtp";
+    let video: StatsEntry | undefined;
+    let audio: StatsEntry | undefined;
+    let pair: StatsEntry | undefined;
+    const remoteInbound: StatsEntry[] = [];
+
+    for (const entry of entries.values()) {
+      if (entry.type === rtpType) {
+        if (entry.kind === "video") {
+          video = entry;
+        } else if (entry.kind === "audio") {
+          audio = entry;
+        }
+      } else if (entry.type === "remote-inbound-rtp") {
+        remoteInbound.push(entry);
+      } else if (entry.type === "transport") {
+        const pairId = statString(entry, "selectedCandidatePairId");
+        pair = pairId == null ? pair : entries.get(pairId);
+      }
+    }
+
+    pair ??= [...entries.values()].find(
+      (entry) => entry.type === "candidate-pair" && entry.nominated === true && entry.state === "succeeded",
+    );
+
+    const localType = statString(entries.get(statString(pair, "localCandidateId") ?? ""), "candidateType");
+    const remoteType = statString(entries.get(statString(pair, "remoteCandidateId") ?? ""), "candidateType");
+    const route =
+      localType == null || remoteType == null
+        ? null
+        : localType === "relay" || remoteType === "relay"
+          ? "relay"
+          : "direct";
+
+    // A sender without a track, such as the audio of a capture without audio, still reports a codec. Only name the
+    // codec of packets that actually flow.
+    const packetKey = direction === "receive" ? "packetsReceived" : "packetsSent";
+    const codec = (rtp: StatsEntry | undefined) => {
+      if ((statNumber(rtp, packetKey) ?? 0) === 0) {
+        return null;
+      }
+
+      const mimeType = statString(entries.get(statString(rtp, "codecId") ?? ""), "mimeType");
+      return mimeType?.split("/")[1] ?? null;
+    };
+
+    // Counters for the rates
+    const byteKey = direction === "receive" ? "bytesReceived" : "bytesSent";
+    const bytes = (statNumber(video, byteKey) ?? 0) + (statNumber(audio, byteKey) ?? 0);
+    let lost: number;
+    let packets: number;
+
+    if (direction === "receive") {
+      lost = (statNumber(video, "packetsLost") ?? 0) + (statNumber(audio, "packetsLost") ?? 0);
+      packets = lost + (statNumber(video, "packetsReceived") ?? 0) + (statNumber(audio, "packetsReceived") ?? 0);
+    } else {
+      lost = remoteInbound.reduce((sum, entry) => sum + (statNumber(entry, "packetsLost") ?? 0), 0);
+      packets = (statNumber(video, "packetsSent") ?? 0) + (statNumber(audio, "packetsSent") ?? 0);
+    }
+
+    const timestamp = statNumber(video, "timestamp") ?? statNumber(pair, "timestamp") ?? performance.now();
+    const previous = this.previous.get(connection);
+    this.previous.set(connection, { timestamp, bytes, lost, packets });
+
+    let bitrate: number | null = null;
+    let packetLoss: number | null = packets > 0 ? lost / packets : null;
+
+    if (previous != null && timestamp > previous.timestamp) {
+      bitrate = ((bytes - previous.bytes) * 8 * 1000) / (timestamp - previous.timestamp);
+
+      const newPackets = packets - previous.packets;
+      packetLoss = newPackets > 0 ? Math.max(0, lost - previous.lost) / newPackets : packetLoss;
+    }
+
+    const remoteVideo = remoteInbound.find((entry) => entry.kind === "video");
+
+    return {
+      state: connection.connectionState,
+      route,
+      videoCodec: codec(video),
+      audioCodec: codec(audio),
+      width: statNumber(video, "frameWidth"),
+      height: statNumber(video, "frameHeight"),
+      frameRate: statNumber(video, "framesPerSecond"),
+      bitrate,
+      roundTripTime:
+        (direction === "send" ? statNumber(remoteVideo, "roundTripTime") : null) ??
+        statNumber(pair, "currentRoundTripTime"),
+      packetLoss,
+      limitation: direction === "send" ? statString(video, "qualityLimitationReason") : null,
+    };
+  }
+}
+
+/**
  * A screen that another participant presents to this client.
  */
 class IncomingStream {
@@ -997,6 +1174,10 @@ class IncomingStream {
 
   private readonly link: PeerLink;
   private readonly sendMessage: MessageSender;
+
+  get connection(): RTCPeerConnection {
+    return this.link.connection;
+  }
 
   constructor(
     streamId: string,
@@ -1091,6 +1272,7 @@ class Ui {
    * The name typed in the menu, trimmed. It may be empty.
    */
   public onnamechange: ((name: string) => void) | null = null;
+  public onmenutoggle: ((open: boolean) => void) | null = null;
   public onconfirm: ((name: string) => void) | null = null;
   public oncancel: (() => void) | null = null;
 
@@ -1114,6 +1296,10 @@ class Ui {
   private readonly participantsSection: HTMLElement;
   private readonly qualitySection: HTMLElement;
   private copyFeedbackTimer: number | null = null;
+  private readonly statsList: HTMLElement;
+  private readonly statsEmpty: HTMLElement;
+  private readonly statsTemplate: HTMLTemplateElement;
+  private readonly statsNames: HTMLElement;
 
   /**
    * The settings shown in the menu. An invalid input goes back to them.
@@ -1149,6 +1335,13 @@ class Ui {
     this.participantList = getElement("participant-list", HTMLElement);
     this.participantsSection = getElement("menu-participants", HTMLElement);
     this.qualitySection = getElement("menu-quality", HTMLElement);
+    this.statsList = getElement("stats-list", HTMLElement);
+    this.statsEmpty = getElement("stats-empty", HTMLElement);
+    this.statsTemplate = getElement("stats-template", HTMLTemplateElement);
+    this.statsNames = getElement("stats-names", HTMLElement);
+
+    const menu = getElement("menu", HTMLElement);
+    menu.addEventListener("toggle", () => this.onmenutoggle?.(menu.matches(":popover-open")));
     this.viewerCount = getElement("viewer-count", HTMLElement);
     this.viewerCountValue = getElement("viewer-count-value", HTMLElement);
     this.status = getElement("status", HTMLElement);
@@ -1273,6 +1466,59 @@ class Ui {
     for (const slot of this.participantsSection.querySelectorAll(".count-slot")) {
       slot.textContent = participants.length.toString();
     }
+  }
+
+  /**
+   * Shows the statistics of each connection, from the copy of #stats-template, or #stats-empty without any
+   */
+  showStats(entries: { name: string; direction: StatsDirection; stats: ConnectionStats }[]): void {
+    this.statsEmpty.classList.toggle("hidden", entries.length > 0);
+
+    const blocks = entries.map((entry) => {
+      const fragment = this.statsTemplate.content.cloneNode(true) as DocumentFragment;
+      const stats = entry.stats;
+      const values: Record<string, string> = {
+        state: this.statsName("state", stats.state),
+        route: this.statsName("route", stats.route),
+        video: stats.videoCodec ?? NO_VALUE,
+        resolution: stats.width == null || stats.height == null ? NO_VALUE : `${stats.width}×${stats.height}`,
+        frameRate: stats.frameRate == null ? NO_VALUE : `${Math.round(stats.frameRate)} fps`,
+        bitrate: formatBitrate(stats.bitrate),
+        audio: stats.audioCodec ?? NO_VALUE,
+        roundTripTime: stats.roundTripTime == null ? NO_VALUE : `${Math.round(stats.roundTripTime * 1000)} ms`,
+        packetLoss: stats.packetLoss == null ? NO_VALUE : `${(stats.packetLoss * 100).toFixed(1)}%`,
+        limitation: this.statsName("limitation", stats.limitation),
+      };
+
+      for (const name of fragment.querySelectorAll(".stats-name")) {
+        name.textContent = entry.name;
+      }
+
+      for (const field of fragment.querySelectorAll<HTMLElement>("[data-field]")) {
+        field.textContent = values[field.dataset.field ?? ""] ?? NO_VALUE;
+      }
+
+      // Only the presenter's encoder lowers the quality
+      for (const element of fragment.querySelectorAll("[data-send-only]")) {
+        element.classList.toggle("hidden", entry.direction !== "send");
+      }
+
+      return fragment;
+    });
+
+    this.statsList.replaceChildren(...blocks);
+  }
+
+  /**
+   * The translated name of a state, a route or a limitation, from #stats-names
+   */
+  private statsName(kind: "state" | "route" | "limitation", value: string | null): string {
+    if (value == null) {
+      return NO_VALUE;
+    }
+
+    const element = this.statsNames.querySelector(`[data-${kind}="${CSS.escape(value)}"]`);
+    return element?.textContent.trim() ?? value;
   }
 
   showQualitySection(visible: boolean): void {
@@ -1504,6 +1750,14 @@ class RoomController {
 
   private quality: QualitySettings;
 
+  private readonly statsCollector = new StatsCollector();
+
+  /**
+   * Collects the statistics every second while the menu is open
+   */
+  private statsTimer: number | null = null;
+  private collectingStats = false;
+
   /**
    * @param roomId The ID of the room, as typed in the URL hash
    * @param isCreator Whether this client created the room by opening the page without a hash
@@ -1546,6 +1800,7 @@ class RoomController {
     this.ui.onqualitychange = (quality: QualitySettings) => this.changeQuality(quality);
     this.ui.onvideoresize = () => this.outgoing?.refreshQuality();
     this.ui.onnamechange = (name: string) => this.changeName(name);
+    this.ui.onmenutoggle = (open: boolean) => this.toggleStats(open);
 
     const roomIdWords = roomId.split(/(?=[A-Z])/);
     document.title = `${roomIdWords.join(" ")} | screensy`;
@@ -1942,6 +2197,67 @@ class RoomController {
         reconnecting: seats.get(participant.id)?.status === "reconnecting",
       })),
     );
+  }
+
+  private toggleStats(open: boolean): void {
+    if (open && this.statsTimer == null) {
+      this.statsTimer = window.setInterval(() => void this.updateStats(), STATS_INTERVAL_MS);
+      void this.updateStats();
+    } else if (!open && this.statsTimer != null) {
+      window.clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+
+  /**
+   * The presenter sees one entry per viewer, a viewer sees the stream they receive
+   */
+  private async updateStats(): Promise<void> {
+    if (this.collectingStats) {
+      return;
+    }
+
+    this.collectingStats = true;
+
+    try {
+      const targets: { name: string; direction: StatsDirection; connection: RTCPeerConnection }[] = [];
+
+      if (this.outgoing != null) {
+        for (const { participantId, connection } of this.outgoing.connections()) {
+          targets.push({ name: this.nameOf(participantId), direction: "send", connection });
+        }
+      } else {
+        const presenter = this.state?.presenters.find(
+          (presenter) => presenter.participantId !== this.selfId && presenter.status === "live",
+        );
+        const stream = presenter == null ? undefined : this.incoming.get(presenter.streamId);
+
+        if (presenter != null && stream != null) {
+          targets.push({
+            name: this.nameOf(presenter.participantId),
+            direction: "receive",
+            connection: stream.connection,
+          });
+        }
+      }
+
+      const entries = await Promise.all(
+        targets.map(async (target) => ({
+          name: target.name,
+          direction: target.direction,
+          stats: await this.statsCollector.collect(target.connection, target.direction),
+        })),
+      );
+
+      // The menu may have closed meanwhile
+      if (this.statsTimer != null) {
+        this.ui.showStats(entries);
+      }
+    } catch (error) {
+      console.warn("Could not read the connection statistics.", error);
+    } finally {
+      this.collectingStats = false;
+    }
   }
 
   private changeQuality(quality: QualitySettings): void {
