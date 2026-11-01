@@ -157,7 +157,7 @@ const INIT_SCRIPT = `
   NativePeerConnection.prototype.getStats = function (...args) { window.__getStatsCalls++; return nativeGetStats.apply(this, args); };
   const nativeReplaceTrack = RTCRtpSender.prototype.replaceTrack;
   RTCRtpSender.prototype.replaceTrack = async function (track) {
-    window.__replaced.push({ kind: track?.kind ?? null, enabled: track?.enabled ?? null });
+    window.__replaced.push({ kind: track?.kind ?? null, enabled: track?.enabled ?? null, type: track?.constructor.name ?? null });
     if (window.__replaceHook) await window.__replaceHook(this, track);
     return nativeReplaceTrack.call(this, track);
   };
@@ -179,7 +179,21 @@ const INIT_SCRIPT = `
     const context = canvas.getContext("2d");
     let i = 0;
     const frameRate = options.frameRate ?? 20;
-    setInterval(() => { context.fillStyle = options.color ?? "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, width, height); }, 1000 / frameRate);
+    // A black and white checkerboard of 16 px squares, to measure how sharp the received video is
+    let fill = options.color;
+    if (options.pattern === "checker") {
+      const tile = document.createElement("canvas");
+      tile.width = 32;
+      tile.height = 32;
+      const tileContext = tile.getContext("2d");
+      tileContext.fillStyle = "white";
+      tileContext.fillRect(0, 0, 32, 32);
+      tileContext.fillStyle = "black";
+      tileContext.fillRect(0, 0, 16, 16);
+      tileContext.fillRect(16, 16, 16, 16);
+      fill = context.createPattern(tile, "repeat");
+    }
+    setInterval(() => { context.fillStyle = fill ?? "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, width, height); }, 1000 / frameRate);
     const stream = canvas.captureStream(frameRate);
     if (options.audio) {
       const audioContext = new AudioContext();
@@ -1211,6 +1225,153 @@ async function main() {
     const stats = await waitEval(b, "no statistics", STATS, (s) => s.empty && s.entries.length === 0);
     assert.equal(stats.entries.length, 0);
     await closeMenu(b);
+  });
+
+  // --- Blur ---
+
+  // The average difference between horizontal neighbors, drawn at 320x180: about 30 for the checkerboard, near 0 when
+  // blurred
+  const VIDEO_EDGES = `(() => {
+    const video = document.getElementById("stream");
+    if (video.videoWidth === 0) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 180;
+    const context = canvas.getContext("2d");
+    context.drawImage(video, 0, 0, 320, 180);
+    const data = context.getImageData(0, 0, 320, 180).data;
+    let sum = 0;
+    let count = 0;
+    for (let y = 0; y < 180; y++) {
+      for (let x = 1; x < 320; x++) {
+        const i = (y * 320 + x) * 4;
+        sum += Math.abs(data[i] - data[i - 4]);
+        count++;
+      }
+    }
+    return { edges: sum / count, width: video.videoWidth, height: video.videoHeight };
+  })()`;
+  const isSharp = (v) => v != null && v.edges > 20;
+  const isBlurry = (v) => v != null && v.edges < 5;
+  const receivedFps = `(async () => {
+    const values = [];
+    for (const pc of window.__pcs.filter((pc) => pc.connectionState !== "closed")) {
+      (await pc.getStats()).forEach((r) => { if (r.type === "inbound-rtp" && r.kind === "video") values.push(r.framesPerSecond ?? 0); });
+    }
+    return values;
+  })()`;
+  const CHECKER = { width: 640, height: 360, pattern: "checker" };
+
+  await step("blurring the screen: blurry for the viewers and in the preview, on the same connections", async () => {
+    await a.eval(`window.__nextCapture = ${JSON.stringify(CHECKER)}`);
+    await a.click("#present-button");
+    await a.waitFor("A dialog", (s) => s.dialogOpen);
+    await a.submitDialog("Alice");
+    await a.waitFor("A presenting", (s) => s.videoLocal && s.toolbar.includes("blur-button"));
+    const sharp = await waitEval(b, "B sees the sharp checkerboard", VIDEO_EDGES, isSharp, 15000);
+    console.log(`     sharp: ${JSON.stringify(sharp)}`);
+    const pcs = await b.eval("window.__pcs.length");
+    const streamId = await b.eval("window.__roomState.presenters[0].streamId");
+
+    const started = Date.now();
+    await a.click("#blur-button");
+    const blurry = await waitEval(b, "B sees it blurred", VIDEO_EDGES, isBlurry, 10000);
+    console.log(`     blurred after ${Date.now() - started} ms: ${JSON.stringify(blurry)}`);
+    assert.equal(blurry.width, 160, "sent at a quarter of the size");
+    await waitEval(a, "A's preview is blurred too", VIDEO_EDGES, isBlurry);
+    const sa = await a.state();
+    assert.ok(sa.toolbar.includes("unblur-button") && !sa.toolbar.includes("blur-button"));
+    assert.equal(await b.eval("window.__pcs.length"), pcs, "no new connection");
+    assert.equal(await b.eval("window.__roomState.presenters[0].streamId"), streamId);
+    await a.shot("19-blurred-en");
+
+    await sleep(3000);
+    const fps = await b.eval(receivedFps);
+    console.log(`     received while blurred: ${JSON.stringify(fps)} fps`);
+    assert.ok(fps.length === 1 && fps[0] >= 15, "at least 3/4 of the 20 fps capture");
+  });
+
+  await step("unblurring brings the sharp screen back", async () => {
+    await a.click("#unblur-button");
+    await waitEval(b, "B sees it sharp", VIDEO_EDGES, isSharp, 10000);
+    await a.waitFor("blur button back", (s) => s.toolbar.includes("blur-button"));
+  });
+
+  await step("a switch while blurred only ever sends the blurred video", async () => {
+    await a.click("#blur-button");
+    await waitEval(b, "B sees it blurred", VIDEO_EDGES, isBlurry, 10000);
+    await a.eval("window.__replaced = []");
+    await switchTo(a, { width: 800, height: 600, pattern: "checker" });
+    const blurry = await waitEval(
+      b,
+      "B sees the new screen blurred",
+      VIDEO_EDGES,
+      (v) => isBlurry(v) && v.width === 200,
+      10000,
+    );
+    assert.equal(blurry.height, 150);
+    const video = await a.eval(`window.__replaced.filter((r) => r.kind === "video")`);
+    assert.ok(video.length > 0 && video.every((r) => r.type === "MediaStreamTrackGenerator"), JSON.stringify(video));
+  });
+
+  await step("hiding wins over the blur, and unblurring while hidden shows nothing", async () => {
+    await a.click("#hide-button");
+    await waitColor(b, "B sees black", isBlack);
+    await a.eval("window.__replaced = []");
+    await a.click("#unblur-button");
+    await a.waitFor("A unblurred", (s) => s.toolbar.includes("blur-button"));
+    const video = await a.eval(`window.__replaced.filter((r) => r.kind === "video")`);
+    assert.ok(video.length > 0 && video.every((r) => r.enabled === false), JSON.stringify(video));
+    await sleep(1000);
+    await waitColor(b, "B still sees black", isBlack);
+    await a.click("#show-button");
+    await waitEval(b, "B sees the sharp screen", VIDEO_EDGES, isSharp, 10000);
+  });
+
+  await step("a blur that a connection rejects goes back and tells the presenter", async () => {
+    await a.eval(`(() => {
+      window.__replaceHook = async (sender, track) => {
+        if (track != null && track.constructor.name === "MediaStreamTrackGenerator") throw new Error("injected failure");
+      };
+    })()`);
+    await a.click("#blur-button");
+    const sa = await a.waitFor("A notified", (s) => s.notices.includes("notice-blur-failed"));
+    await a.eval("window.__replaceHook = null");
+    assert.ok(sa.toolbar.includes("blur-button"), "still not blurred");
+    await sleep(1000);
+    assert.ok(isSharp(await b.eval(VIDEO_EDGES)), "B still sees the sharp screen");
+    await a.click("#notice-blur-failed .notice-close");
+  });
+
+  await step("a blurred screen stays blurred after an automatic resume", async () => {
+    await a.click("#blur-button");
+    await waitEval(b, "B sees it blurred", VIDEO_EDGES, isBlurry, 10000);
+    const streamId = await b.eval("window.__roomState.presenters[0].streamId");
+    await a.eval("window.__sockets.at(-1).close()");
+    const end = Date.now() + 20000;
+    while (
+      !(await b.eval(
+        `window.__roomState.presenters[0]?.status === "live" && window.__roomState.presenters[0]?.streamId !== ${JSON.stringify(streamId)}`,
+      ))
+    ) {
+      if (Date.now() > end) throw new Error("A did not resume");
+      await sleep(200);
+    }
+    await b.waitFor("B viewing again", (s) => s.videoPlaying, 15000);
+    await waitEval(b, "B sees it blurred again", VIDEO_EDGES, isBlurry, 10000);
+    await a.click("#unblur-button");
+    await a.click("#stop-button");
+    await b.waitFor("B waiting", (s) => s.status === "status-waiting");
+  });
+
+  await step("without the breakout box, there is no blur button", async () => {
+    const f = await newPage(cdp, "F", { initExtra: "delete window.MediaStreamTrackProcessor;" });
+    await f.goto(`${ORIGIN}/`);
+    await f.waitFor("F dialog", (s) => s.dialogOpen);
+    await f.submitDialog("Frank");
+    const sf = await f.waitFor("F presenting", (s) => s.videoLocal && s.toolbar.includes("hide-button"));
+    assert.ok(!sf.toolbar.includes("blur-button") && !sf.toolbar.includes("unblur-button"));
+    await cdp.send("Target.closeTarget", { targetId: f.targetId });
   });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");

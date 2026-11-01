@@ -74,6 +74,12 @@
             <button id="show-button" class="hidden" type="button">
                 Show screen
             </button>
+            <button id="blur-button" class="hidden" type="button">
+                Blur screen
+            </button>
+            <button id="unblur-button" class="hidden" type="button">
+                Unblur screen
+            </button>
             <button id="stop-button" class="hidden" type="button">
                 Stop presenting
             </button>
@@ -229,6 +235,12 @@
                     Could not switch to that screen. Your current screen is still
                     being presented.
                 </p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-blur-failed" class="notice hidden" role="status">
+                <p>Could not blur the screen.</p>
                 <button class="notice-close" type="button" aria-label="Close">
                     ×
                 </button>

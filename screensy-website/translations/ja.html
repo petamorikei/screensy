@@ -70,6 +70,12 @@
             <button id="show-button" class="hidden" type="button">
                 画面を表示
             </button>
+            <button id="blur-button" class="hidden" type="button">
+                画面をぼかす
+            </button>
+            <button id="unblur-button" class="hidden" type="button">
+                ぼかしを解除
+            </button>
             <button id="stop-button" class="hidden" type="button">
                 配信を停止
             </button>
@@ -217,6 +223,12 @@
                 <p>
                     画面を切り替えられませんでした。今の画面の配信を続けます。
                 </p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-blur-failed" class="notice hidden" role="status">
+                <p>画面をぼかせませんでした。</p>
                 <button class="notice-close" type="button" aria-label="閉じる">
                     ×
                 </button>
