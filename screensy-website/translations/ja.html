@@ -61,6 +61,15 @@
             <button id="present-button" class="hidden" type="button">
                 配信する
             </button>
+            <button id="switch-button" class="hidden" type="button">
+                画面を切り替え
+            </button>
+            <button id="hide-button" class="hidden" type="button">
+                画面を隠す
+            </button>
+            <button id="show-button" class="hidden" type="button">
+                画面を表示
+            </button>
             <button id="stop-button" class="hidden" type="button">
                 配信を停止
             </button>
@@ -97,6 +106,12 @@
             <p id="status-presenter-resuming" class="hidden">
                 <span class="name-slot"></span>さんが配信を再開しようとしています…
             </p>
+            <p id="status-presenter-hidden" class="hidden">
+                <span class="name-slot"></span>さんが画面を一時的に隠しています。
+            </p>
+            <p id="status-self-hidden" class="hidden">
+                視聴者には画面を隠しています。黒い画面が表示され、音声も届きません。
+            </p>
         </div>
         <div class="notices">
             <div id="notice-taken-over" class="notice hidden" role="status">
@@ -113,6 +128,14 @@
             </div>
             <div id="notice-connection-lost" class="notice hidden" role="status">
                 <p>接続が切れたため、配信を停止しました。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-switch-failed" class="notice hidden" role="status">
+                <p>
+                    画面を切り替えられませんでした。今の画面の配信を続けます。
+                </p>
                 <button class="notice-close" type="button" aria-label="閉じる">
                     ×
                 </button>

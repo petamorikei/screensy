@@ -184,7 +184,9 @@ type StatusId =
   | "status-switching"
   | "status-presenter-left"
   | "status-presenter-lost"
-  | "status-presenter-resuming";
+  | "status-presenter-resuming"
+  | "status-presenter-hidden"
+  | "status-self-hidden";
 
 const STATUS_IDS: StatusId[] = [
   "status-connecting",
@@ -195,9 +197,16 @@ const STATUS_IDS: StatusId[] = [
   "status-presenter-left",
   "status-presenter-lost",
   "status-presenter-resuming",
+  "status-presenter-hidden",
+  "status-self-hidden",
 ];
 
-type NoticeId = "notice-taken-over" | "notice-moved-to-other-tab" | "notice-connection-lost" | "notice-access-denied";
+type NoticeId =
+  | "notice-taken-over"
+  | "notice-moved-to-other-tab"
+  | "notice-connection-lost"
+  | "notice-access-denied"
+  | "notice-switch-failed";
 
 type DialogMode = "start" | "resume";
 
@@ -449,22 +458,85 @@ class PeerLink {
 interface OutgoingPeer {
   connectionId: string;
   link: PeerLink;
+  videoSender: RTCRtpSender;
+  audioSender: RTCRtpSender;
+}
+
+/**
+ * A screen capture and the tracks sent from it. The video is sent as a clone, so that hiding it turns only what the
+ * viewers get black, and the preview keeps showing the capture. The audio is never played back locally, so its own
+ * track is sent.
+ */
+interface Capture {
+  stream: MediaStream;
+  sendVideo: MediaStreamTrack | null;
+  sendAudio: MediaStreamTrack | null;
+}
+
+function prepareCapture(stream: MediaStream, hidden: boolean): Capture {
+  const capture: Capture = {
+    stream,
+    sendVideo: stream.getVideoTracks()[0]?.clone() ?? null,
+    sendAudio: stream.getAudioTracks()[0] ?? null,
+  };
+
+  // Before the tracks reach any sender, so that a hidden presentation never leaks a frame
+  setCaptureHidden(capture, hidden);
+
+  return capture;
+}
+
+function setCaptureHidden(capture: Capture, hidden: boolean): void {
+  for (const track of [capture.sendVideo, capture.sendAudio]) {
+    if (track != null) {
+      track.enabled = !hidden;
+    }
+  }
+}
+
+function stopCapture(capture: Capture): void {
+  for (const track of capture.stream.getTracks()) {
+    track.stop();
+  }
+
+  capture.sendVideo?.stop();
 }
 
 /**
  * The screen this client presents. It has one connection per recipient, keyed by participant ID and connection ID.
  * Until the server accepts the presentation, it has no stream ID and no connections.
+ *
+ * Every connection has one video and one audio transceiver, even for a capture without audio. Switching the screen
+ * or hiding it then only replaces or disables tracks, without a new negotiation.
  */
 class OutgoingStream {
-  public readonly mediaStream: MediaStream;
-
   private readonly rtcConfig: RTCConfiguration;
   private readonly sendMessage: MessageSender;
   private readonly peers = new Map<string, OutgoingPeer>();
   private currentStreamId: string | null = null;
 
+  private capture: Capture;
+
+  /**
+   * The capture that is being switched to, until every connection sends it
+   */
+  private pending: Capture | null = null;
+
+  /**
+   * Gives the transceivers a stream to announce, which stays the same when the screen is switched
+   */
+  private readonly sendStream = new MediaStream();
+
+  private isHidden = false;
+  private stopped = false;
+
+  /**
+   * The participants of the last sync, to reopen connections after a switch
+   */
+  private lastSync: { participants: ParticipantState[]; selfId: string } | null = null;
+
   constructor(mediaStream: MediaStream, rtcConfig: RTCConfiguration, sendMessage: MessageSender) {
-    this.mediaStream = mediaStream;
+    this.capture = prepareCapture(mediaStream, false);
     this.rtcConfig = rtcConfig;
     this.sendMessage = sendMessage;
   }
@@ -474,6 +546,101 @@ class OutgoingStream {
    */
   get streamId(): string | null {
     return this.currentStreamId;
+  }
+
+  /**
+   * The current capture, shown in the preview
+   */
+  get mediaStream(): MediaStream {
+    return this.capture.stream;
+  }
+
+  get hidden(): boolean {
+    return this.isHidden;
+  }
+
+  /**
+   * Turns what the viewers get black and silent, or shows the screen again. The connections stay open.
+   */
+  setHidden(hidden: boolean): void {
+    this.isHidden = hidden;
+    setCaptureHidden(this.capture, hidden);
+
+    if (this.pending != null) {
+      setCaptureHidden(this.pending, hidden);
+    }
+
+    this.sendStreamState();
+  }
+
+  /**
+   * Switches every connection to a new capture. If any connection rejects it, every connection goes back to the
+   * current capture, the new one is stopped, and the result is false.
+   */
+  async replaceCapture(mediaStream: MediaStream): Promise<boolean> {
+    if (this.stopped || this.pending != null) {
+      stopCapture({ stream: mediaStream, sendVideo: null, sendAudio: null });
+      return false;
+    }
+
+    const previous = this.capture;
+    const next = prepareCapture(mediaStream, this.isHidden);
+    this.pending = next;
+
+    const peers = [...this.peers.values()];
+    const results = await Promise.allSettled(
+      peers.map(async (peer) => {
+        await peer.videoSender.replaceTrack(next.sendVideo);
+        await peer.audioSender.replaceTrack(next.sendAudio);
+      }),
+    );
+
+    this.pending = null;
+
+    if (this.stopped) {
+      stopCapture(next);
+      return false;
+    }
+
+    // A connection that closed meanwhile does not count
+    const failed = results.some((result, index) => result.status === "rejected" && this.isOpenPeer(peers[index]));
+
+    if (failed) {
+      await Promise.allSettled(
+        [...this.peers.values()].map(async (peer) => {
+          await peer.videoSender.replaceTrack(previous.sendVideo);
+          await peer.audioSender.replaceTrack(previous.sendAudio);
+        }),
+      );
+
+      stopCapture(next);
+      return false;
+    }
+
+    this.capture = next;
+    stopCapture(previous);
+
+    // Connections opened during the switch still send the previous capture. Reopen them.
+    for (const [participantId, peer] of this.peers) {
+      if (peer.videoSender.track !== next.sendVideo || peer.audioSender.track !== next.sendAudio) {
+        peer.link.close();
+        this.peers.delete(participantId);
+      }
+    }
+
+    if (this.lastSync != null) {
+      this.sync(this.lastSync.participants, this.lastSync.selfId);
+    }
+
+    // A sender that had no track, such as the audio of a capture without audio, has no limits yet. Connections that
+    // are still gathering get them when they finish.
+    for (const peer of this.peers.values()) {
+      if (peer.link.connection.iceGatheringState === "complete") {
+        void applyEncodingParameters(peer.link.connection);
+      }
+    }
+
+    return true;
   }
 
   /**
@@ -490,6 +657,11 @@ class OutgoingStream {
   adopt(streamId: string): void {
     this.closePeers();
     this.currentStreamId = streamId;
+
+    // The server shows every new stream at first
+    if (this.isHidden) {
+      this.sendStreamState();
+    }
   }
 
   /**
@@ -497,6 +669,8 @@ class OutgoingStream {
    * reconnected.
    */
   sync(participants: ParticipantState[], selfId: string): void {
+    this.lastSync = { participants, selfId };
+
     const streamId = this.currentStreamId;
 
     if (streamId == null) {
@@ -550,11 +724,20 @@ class OutgoingStream {
    * Stops the capture and closes every connection.
    */
   stop(): void {
+    // A switch in progress sees this and stops its new capture
+    this.stopped = true;
     this.closePeers();
     this.currentStreamId = null;
+    stopCapture(this.capture);
+  }
 
-    for (const track of this.mediaStream.getTracks()) {
-      track.stop();
+  private isOpenPeer(peer: OutgoingPeer): boolean {
+    return [...this.peers.values()].includes(peer) && peer.link.connection.connectionState !== "closed";
+  }
+
+  private sendStreamState(): void {
+    if (this.currentStreamId != null) {
+      this.sendMessage({ type: "streamstate", streamId: this.currentStreamId, hidden: this.isHidden });
     }
   }
 
@@ -569,12 +752,11 @@ class OutgoingStream {
   private addPeer(participantId: string, connectionId: string, streamId: string): void {
     const link = new PeerLink(this.rtcConfig);
     const connection = link.connection;
+    const options: RTCRtpTransceiverInit = { direction: "sendonly", streams: [this.sendStream] };
+    const video = connection.addTransceiver(this.capture.sendVideo ?? "video", options);
+    const audio = connection.addTransceiver(this.capture.sendAudio ?? "audio", options);
 
-    this.peers.set(participantId, { connectionId, link });
-
-    for (const track of this.mediaStream.getTracks()) {
-      connection.addTrack(track, this.mediaStream);
-    }
+    this.peers.set(participantId, { connectionId, link, videoSender: video.sender, audioSender: audio.sender });
 
     connection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate == null) {
@@ -719,6 +901,11 @@ class IncomingStream {
 class Ui {
   public onpresent: (() => void) | null = null;
   public onstop: (() => void) | null = null;
+  /**
+   * Must call getDisplayMedia synchronously, like onconfirm
+   */
+  public onswitch: (() => void) | null = null;
+  public onhide: ((hidden: boolean) => void) | null = null;
   public onconfirm: ((name: string) => void) | null = null;
   public oncancel: (() => void) | null = null;
 
@@ -727,6 +914,9 @@ class Ui {
   private readonly toolbar: HTMLElement;
   private readonly presentButton: HTMLButtonElement;
   private readonly stopButton: HTMLButtonElement;
+  private readonly switchButton: HTMLButtonElement;
+  private readonly hideButton: HTMLButtonElement;
+  private readonly showButton: HTMLButtonElement;
   private readonly viewerCount: HTMLElement;
   private readonly viewerCountValue: HTMLElement;
   private readonly status: HTMLElement;
@@ -740,6 +930,9 @@ class Ui {
     this.toolbar = getElement("toolbar", HTMLElement);
     this.presentButton = getElement("present-button", HTMLButtonElement);
     this.stopButton = getElement("stop-button", HTMLButtonElement);
+    this.switchButton = getElement("switch-button", HTMLButtonElement);
+    this.hideButton = getElement("hide-button", HTMLButtonElement);
+    this.showButton = getElement("show-button", HTMLButtonElement);
     this.viewerCount = getElement("viewer-count", HTMLElement);
     this.viewerCountValue = getElement("viewer-count-value", HTMLElement);
     this.status = getElement("status", HTMLElement);
@@ -749,6 +942,9 @@ class Ui {
 
     this.presentButton.addEventListener("click", () => this.onpresent?.());
     this.stopButton.addEventListener("click", () => this.onstop?.());
+    this.switchButton.addEventListener("click", () => this.onswitch?.());
+    this.hideButton.addEventListener("click", () => this.onhide?.(true));
+    this.showButton.addEventListener("click", () => this.onhide?.(false));
 
     // The confirm handler must run synchronously in the submit event, so that getDisplayMedia still has the user
     // activation of the click
@@ -828,10 +1024,21 @@ class Ui {
     this.status.classList.toggle("hidden", id == null);
   }
 
-  showToolbar(options: { visible: boolean; canPresent: boolean; presenting: boolean; viewers: number }): void {
+  showToolbar(options: {
+    visible: boolean;
+    canPresent: boolean;
+    presenting: boolean;
+    hidden: boolean;
+    switching: boolean;
+    viewers: number;
+  }): void {
     this.toolbar.classList.toggle("hidden", !options.visible);
     this.presentButton.classList.toggle("hidden", !options.canPresent);
     this.stopButton.classList.toggle("hidden", !options.presenting);
+    this.switchButton.classList.toggle("hidden", !options.presenting);
+    this.switchButton.disabled = options.switching;
+    this.hideButton.classList.toggle("hidden", !options.presenting || options.hidden);
+    this.showButton.classList.toggle("hidden", !options.presenting || !options.hidden);
     this.viewerCount.classList.toggle("hidden", !options.presenting);
     this.viewerCountValue.textContent = options.viewers.toString();
   }
@@ -929,6 +1136,11 @@ class RoomController {
   private countdownTimer: number | null = null;
 
   /**
+   * From the click on "Switch screen" until the switch is done or abandoned
+   */
+  private switchInProgress = false;
+
+  /**
    * @param roomId The ID of the room, as typed in the URL hash
    * @param isCreator Whether this client created the room by opening the page without a hash
    */
@@ -961,6 +1173,8 @@ class RoomController {
     this.ui.onstop = () => this.stopPresenting();
     this.ui.onconfirm = (name: string) => this.confirmDialog(name);
     this.ui.oncancel = () => this.cancelDialog();
+    this.ui.onswitch = () => this.switchScreen();
+    this.ui.onhide = (hidden: boolean) => this.setHidden(hidden);
 
     const roomIdWords = roomId.split(/(?=[A-Z])/);
     document.title = `${roomIdWords.join(" ")} | screensy`;
@@ -1240,14 +1454,7 @@ class RoomController {
     const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage);
     this.outgoing = outgoing;
 
-    // The browser's own "Stop sharing" button ends the track
-    for (const track of mediaStream.getVideoTracks()) {
-      track.addEventListener("ended", () => {
-        if (this.outgoing === outgoing) {
-          this.stopPresenting();
-        }
-      });
-    }
+    this.watchCapture(outgoing, mediaStream);
 
     const self = this.state?.participants.find((participant) => participant.id === this.selfId);
 
@@ -1257,6 +1464,82 @@ class RoomController {
 
     // If the socket is down, this message is lost, and the next "welcome" resolves it
     this.sendMessage({ type: "present", resume });
+    this.render();
+  }
+
+  /**
+   * Stops presenting when the browser's own "Stop sharing" button ends the capture, as long as it is the current one
+   */
+  private watchCapture(outgoing: OutgoingStream, mediaStream: MediaStream): void {
+    for (const track of mediaStream.getVideoTracks()) {
+      track.addEventListener("ended", () => {
+        if (this.outgoing === outgoing && outgoing.mediaStream === mediaStream) {
+          this.stopPresenting();
+        }
+      });
+    }
+  }
+
+  /**
+   * Lets the presenter choose another screen, without reconnecting to the viewers
+   */
+  private switchScreen(): void {
+    const outgoing = this.outgoing;
+
+    if (outgoing == null || this.switchInProgress) {
+      return;
+    }
+
+    // Call getDisplayMedia before anything else, while the click still counts as a user activation
+    let capture: Promise<MediaStream>;
+
+    try {
+      capture = navigator.mediaDevices.getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
+    } catch (error) {
+      capture = Promise.reject(error);
+    }
+
+    this.switchInProgress = true;
+    this.render();
+
+    capture
+      .then(
+        async (mediaStream: MediaStream) => {
+          if (this.outgoing !== outgoing) {
+            // Stopped or taken over while the picker was open
+            for (const track of mediaStream.getTracks()) {
+              track.stop();
+            }
+
+            return;
+          }
+
+          this.watchCapture(outgoing, mediaStream);
+          const switched = await outgoing.replaceCapture(mediaStream);
+
+          if (this.outgoing !== outgoing) {
+            return;
+          }
+
+          if (!switched) {
+            this.ui.showNotice("notice-switch-failed");
+          } else if (mediaStream.getVideoTracks()[0]?.readyState === "ended") {
+            // Sharing ended before the switch was complete
+            this.stopPresenting();
+          }
+        },
+        () => {
+          // Cancelled or denied. The current screen stays.
+        },
+      )
+      .finally(() => {
+        this.switchInProgress = false;
+        this.render();
+      });
+  }
+
+  private setHidden(hidden: boolean): void {
+    this.outgoing?.setHidden(hidden);
     this.render();
   }
 
@@ -1352,14 +1635,23 @@ class RoomController {
             countdown = deadline == null ? null : formatCountdown(deadline - performance.now());
           }
         } else if (stream?.mediaStream != null) {
+          // While hidden, the stream stays attached: it is black and silent
           video = stream.mediaStream;
           this.lastShownStreamId = presenter.streamId;
+
+          if (presenter.hidden) {
+            status = "status-presenter-hidden";
+          }
+        } else if (presenter.hidden) {
+          status = "status-presenter-hidden";
         } else if (this.lastShownStreamId != null && this.lastShownStreamId !== presenter.streamId) {
           status = "status-switching";
         } else {
           status = "status-joining";
         }
       }
+    } else if (this.outgoing.hidden) {
+      status = "status-self-hidden";
     }
 
     this.ui.setVideo(video, this.outgoing != null);
@@ -1379,6 +1671,8 @@ class RoomController {
       visible: ready || this.outgoing != null,
       canPresent: ready && this.canPresent && this.outgoing == null && this.dialogMode == null,
       presenting: this.outgoing != null,
+      hidden: this.outgoing?.hidden ?? false,
+      switching: this.switchInProgress,
       viewers,
     });
   }
