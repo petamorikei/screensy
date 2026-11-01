@@ -467,6 +467,13 @@ async function main() {
     const s = await a.waitFor("start dialog", (s) => s.dialogOpen && s.dialogMode === "start");
     assert.match(s.hash, /^#[A-Z][a-zA-Z]+$/);
     assert.equal(s.replaceOptions, null);
+    // The browser should not offer or save names: screensy remembers the name itself
+    assert.equal(
+      await a.eval(
+        `["present-name", "menu-name-input"].every((id) => document.getElementById(id).autocomplete === "off") && !document.getElementById("present-name").hasAttribute("name")`,
+      ),
+      true,
+    );
     room = s.hash;
     await a.shot("1-start-dialog-en");
   });

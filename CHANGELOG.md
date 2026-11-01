@@ -13,9 +13,10 @@ The format is based on [Keep a Changelog], and this project adheres to
     button. Up to four people can present at once, shown side by side; a
     click enlarges one of them. When the room is full of presenters, the start
     dialog asks whom to take over from. The room no longer closes when the presenter leaves.
--   Presenters enter a display name, which the browser remembers for the next
-    time. Status messages and notices show the presenter's name, for example
-    when someone takes over.
+-   Presenters enter a display name, which screensy remembers for the next
+    time. The name fields turn off the browser's own autofill. Status messages
+    and notices show the presenter's name, for example when someone takes
+    over.
 -   A "Stop presenting" button. Presenting also stops when the browser's own
     "Stop sharing" control ends the capture.
 -   A "Switch screen" button lets the presenter choose another screen,
