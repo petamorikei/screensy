@@ -56,6 +56,10 @@ interface MessageSetName {
 interface MessagePresent {
   type: "present";
   resume: boolean;
+  /**
+   * The presenter to take over when the room has reached MAX_PRESENTERS. Ignored below the limit.
+   */
+  replace?: string;
 }
 
 interface MessageStopPresenting {
@@ -141,6 +145,11 @@ interface MessagePresentAccepted {
 
 interface MessagePresentRejected {
   type: "presentrejected";
+  /**
+   * "seat-lost": a resume, but the seat is gone. "full": the room has reached MAX_PRESENTERS, and "replace" does not
+   * name one of the presenters.
+   */
+  reason: "seat-lost" | "full";
 }
 
 /**
@@ -159,6 +168,11 @@ type ServerMessage =
   | MessageReplaced;
 
 type MessageSender = (message: ClientMessage) => void;
+
+/**
+ * The number of people that can present at the same time. It must match the rendezvous server.
+ */
+const MAX_PRESENTERS = 1;
 
 const NAME_STORAGE_KEY = "screensy.name";
 const RESUME_STORAGE_PREFIX = "screensy.resume.";
@@ -238,7 +252,8 @@ type NoticeId =
   | "notice-connection-lost"
   | "notice-access-denied"
   | "notice-switch-failed"
-  | "notice-blur-failed";
+  | "notice-blur-failed"
+  | "notice-full";
 
 type DialogMode = "start" | "resume";
 
@@ -1501,7 +1516,10 @@ class Ui {
    */
   public onnamechange: ((name: string) => void) | null = null;
   public onmenutoggle: ((open: boolean) => void) | null = null;
-  public onconfirm: ((name: string) => void) | null = null;
+  /**
+   * The name typed in the dialog, and the presenter chosen to take over in a full room, or null
+   */
+  public onconfirm: ((name: string, replace: string | null) => void) | null = null;
   public oncancel: (() => void) | null = null;
 
   public readonly video: HTMLVideoElement;
@@ -1627,8 +1645,9 @@ class Ui {
     getElement("present-form", HTMLFormElement).addEventListener("submit", (event: SubmitEvent) => {
       event.preventDefault();
       const name = this.nameInput.value.trim();
+      const replace = this.dialog.querySelector<HTMLInputElement>('input[name="replace"]:checked')?.value ?? null;
       this.dialog.close();
-      this.onconfirm?.(name);
+      this.onconfirm?.(name, replace);
     });
 
     getElement("present-cancel", HTMLButtonElement).addEventListener("click", () => {
@@ -1921,17 +1940,36 @@ class Ui {
    * Opens the dialog that starts or resumes presenting.
    *
    * @param mode "start" to start presenting, "resume" to resume after a reload
-   * @param presenterName The name of the current presenter, who would be taken over, or null
+   * @param replaceable In a full room, the presenters to choose from, one of whom is taken over; otherwise null
    * @param name The name to fill in
    */
-  openDialog(mode: DialogMode, presenterName: string | null, name: string): void {
+  openDialog(mode: DialogMode, replaceable: { id: string; name: string }[] | null, name: string): void {
     for (const element of this.dialog.querySelectorAll<HTMLElement>("[data-mode]")) {
       element.classList.toggle("hidden", element.dataset.mode !== mode);
     }
 
-    const warning = getElement("present-takeover-warning", HTMLElement);
-    warning.classList.toggle("hidden", presenterName == null);
-    setNameSlots(warning, presenterName ?? "");
+    // Names come from other people, so they are only ever set as text
+    const fieldset = getElement("present-replace", HTMLElement);
+    const options = (replaceable ?? []).map((presenter) => {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "replace";
+      input.value = presenter.id;
+      input.required = true;
+      input.checked = replaceable?.length === 1;
+      const name = document.createElement("span");
+      name.textContent = presenter.name;
+      label.append(input, name);
+      return label;
+    });
+
+    getElement("present-replace-options", HTMLElement).replaceChildren(...options);
+    fieldset.classList.toggle("hidden", replaceable == null);
+
+    for (const slot of fieldset.querySelectorAll(".max-slot")) {
+      slot.textContent = MAX_PRESENTERS.toString();
+    }
 
     this.nameInput.value = name;
 
@@ -1959,6 +1997,11 @@ class RoomController {
 
   private selfId: string | null = null;
   private state: MessageRoomState | null = null;
+
+  /**
+   * The room state before the current one, to tell who took over a seat
+   */
+  private previousState: MessageRoomState | null = null;
   private outgoing: OutgoingStream | null = null;
   private readonly incoming = new Map<string, IncomingStream>();
 
@@ -2039,7 +2082,7 @@ class RoomController {
 
     this.ui.onpresent = () => this.openStartDialog();
     this.ui.onstop = () => this.stopPresenting();
-    this.ui.onconfirm = (name: string) => this.confirmDialog(name);
+    this.ui.onconfirm = (name: string, replace: string | null) => this.confirmDialog(name, replace);
     this.ui.oncancel = () => this.cancelDialog();
     this.ui.onswitch = () => this.switchScreen();
     this.ui.onhide = (hidden: boolean) => this.setHidden(hidden);
@@ -2094,9 +2137,20 @@ class RoomController {
         }
         break;
       case "presentrejected":
-        if (this.outgoing != null) {
+        if (this.outgoing == null) {
+          break;
+        }
+
+        if (message.reason === "full") {
+          // Someone else filled the room while the dialog was open
+          this.outgoing.stop();
+          this.outgoing = null;
+          this.ui.showNotice("notice-full");
+          this.render();
+        } else {
           this.loseSeat();
         }
+
         break;
       case "replaced":
         // Another tab uses this participant. Join as a new participant when the server closes this socket.
@@ -2144,6 +2198,7 @@ class RoomController {
   }
 
   private handleRoomState(state: MessageRoomState): void {
+    this.previousState = this.state;
     this.state = state;
 
     const now = performance.now();
@@ -2282,15 +2337,19 @@ class RoomController {
       return;
     }
 
-    const presenter = this.state?.presenters.find((presenter) => presenter.participantId !== this.selfId);
-    const presenterName = presenter == null ? null : this.nameOf(presenter.participantId);
+    // A full room needs one of its presenters to be taken over. Reconnecting presenters still hold their seat.
+    const presenters = this.state?.presenters ?? [];
+    const replaceable =
+      presenters.length >= MAX_PRESENTERS
+        ? presenters.map((presenter) => ({ id: presenter.participantId, name: this.nameOf(presenter.participantId) }))
+        : null;
 
     this.dialogMode = "start";
-    this.ui.openDialog("start", presenterName, this.storedName());
+    this.ui.openDialog("start", replaceable, this.storedName());
     this.render();
   }
 
-  private confirmDialog(name: string): void {
+  private confirmDialog(name: string, replace: string | null): void {
     const mode = this.dialogMode;
     this.dialogMode = null;
 
@@ -2307,7 +2366,7 @@ class RoomController {
     this.render();
 
     capture.then(
-      (mediaStream: MediaStream) => this.beginPresenting(mediaStream, name, mode === "resume"),
+      (mediaStream: MediaStream) => this.beginPresenting(mediaStream, name, mode === "resume", replace),
       () => {
         this.ui.showNotice("notice-access-denied");
 
@@ -2329,7 +2388,7 @@ class RoomController {
     this.render();
   }
 
-  private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean): void {
+  private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean, replace: string | null): void {
     this.outgoing?.stop();
 
     const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage, this.quality);
@@ -2344,7 +2403,7 @@ class RoomController {
     }
 
     // If the socket is down, this message is lost, and the next "welcome" resolves it
-    this.sendMessage({ type: "present", resume });
+    this.sendMessage({ type: "present", resume, ...(replace == null ? {} : { replace }) });
     this.render();
   }
 
@@ -2562,8 +2621,14 @@ class RoomController {
     this.render();
   }
 
+  /**
+   * Names the presenter who took over the seat: one who is new in the latest room state
+   */
   private showSeatLostNotice(): void {
-    const presenter = this.state?.presenters.find((presenter) => presenter.participantId !== this.selfId);
+    const before = new Set(this.previousState?.presenters.map((presenter) => presenter.participantId) ?? []);
+    const presenter = this.state?.presenters.find(
+      (presenter) => presenter.participantId !== this.selfId && !before.has(presenter.participantId),
+    );
 
     if (presenter == null) {
       this.ui.showNotice("notice-connection-lost");

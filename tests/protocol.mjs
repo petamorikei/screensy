@@ -103,8 +103,8 @@ class Client {
     this.welcome = await this.type("welcome");
     return this.welcome;
   }
-  async present(resume = false) {
-    this.send({ type: "present", resume });
+  async present(resume, replace) {
+    this.send({ type: "present", resume: resume ?? false, replace });
     return this.next((m) => m.type === "presentaccepted" || m.type === "presentrejected");
   }
   close() {
@@ -145,7 +145,8 @@ test("present and takeover", async () => {
   const acc = await a.present();
   assert.equal(acc.type, "presentaccepted");
   await lastState(b, (s) => s.presenters.length === 1 && s.presenters[0].participantId === a.welcome.selfId);
-  const acc2 = await b.present();
+  // The room is full (MAX_PRESENTERS = 1), so B names the presenter to take over
+  const acc2 = await b.present(false, a.welcome.selfId);
   assert.equal(acc2.type, "presentaccepted");
   assert.notEqual(acc2.streamId, acc.streamId);
   const s = await lastState(a, (s) => s.presenters[0]?.participantId === b.welcome.selfId);
@@ -155,6 +156,45 @@ test("present and takeover", async () => {
   assert.equal(s.presenters[0].graceRemainingMs, null);
   await a.close();
   await b.close();
+});
+
+test("a full room only takes a presenter who names one to take over", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  const b = new Client("b");
+  await a.join(room, "A");
+  await b.join(room, "B");
+  await a.present();
+  for (const replace of [undefined, "999", b.welcome.selfId]) {
+    const r = await b.present(false, replace);
+    assert.equal(r.type, "presentrejected", `replace: ${replace}`);
+    assert.equal(r.reason, "full");
+  }
+  const v = new Client("v");
+  await v.join(room, "V");
+  const s = await lastState(v);
+  assert.deepEqual(
+    s.presenters.map((p) => p.participantId),
+    [a.welcome.selfId],
+    "A still presents",
+  );
+  const acc = await b.present(false, a.welcome.selfId);
+  assert.equal(acc.type, "presentaccepted");
+  await lastState(v, (s) => s.presenters.length === 1 && s.presenters[0].participantId === b.welcome.selfId);
+  await a.close();
+  await b.close();
+  await v.close();
+});
+
+test("replace is ignored below the limit", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  await a.join(room, "A");
+  const acc = await a.present(false, "999");
+  assert.equal(acc.type, "presentaccepted");
+  const s = await lastState(a, (s) => s.presenters.length === 1);
+  assert.equal(s.presenters[0].participantId, a.welcome.selfId);
+  await a.close();
 });
 
 test("clean close -> reason left with the short grace period", async () => {
@@ -299,7 +339,7 @@ test("takeover during grace -> resume rejected, token gives new participant", as
   await a.present();
   await a.close();
   await lastState(b, (s) => s.presenters[0]?.status === "reconnecting");
-  await b.present();
+  await b.present(false, a.welcome.selfId);
   const s = await lastState(b, (s) => s.presenters[0]?.participantId === b.welcome.selfId);
   assert.ok(!s.participants.some((p) => p.id === a.welcome.selfId), "evicted grace participant removed");
   const a2 = new Client("a2");
@@ -307,6 +347,7 @@ test("takeover during grace -> resume rejected, token gives new participant", as
   assert.notEqual(w2.selfId, a.welcome.selfId);
   const r = await a2.present(true);
   assert.equal(r.type, "presentrejected");
+  assert.equal(r.reason, "seat-lost");
   await a2.close();
   await b.close();
 });

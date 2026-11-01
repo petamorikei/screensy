@@ -29,8 +29,8 @@ const CLEAN_CLOSE_CODES = new Set([1000, 1001, 1005]);
 const PING_INTERVAL_MS = numberFromEnv("SCREENSY_PING_INTERVAL_MS", 15_000);
 
 /**
- * The number of people that can present at the same time. When a new presenter exceeds it, the oldest presenter is
- * removed.
+ * The number of people that can present at the same time. In a full room, a new presenter has to name the presenter
+ * to take over.
  */
 const MAX_PRESENTERS = 1;
 
@@ -64,6 +64,10 @@ interface MessageSetName {
 interface MessagePresent {
   type: "present";
   resume: boolean;
+  /**
+   * The presenter to take over when the room has reached MAX_PRESENTERS. Ignored below the limit.
+   */
+  replace?: string;
 }
 
 interface MessageStopPresenting {
@@ -161,6 +165,11 @@ interface MessagePresentAccepted {
 
 interface MessagePresentRejected {
   type: "presentrejected";
+  /**
+   * "seat-lost": a resume, but the sender no longer has a seat. "full": the room has reached MAX_PRESENTERS, and
+   * "replace" does not name one of the presenters.
+   */
+  reason: "seat-lost" | "full";
 }
 
 /**
@@ -384,7 +393,7 @@ class Room {
         this.broadcastState();
         break;
       case "present":
-        this.present(participant, message.resume);
+        this.present(participant, message.resume, message.replace);
         break;
       case "stoppresenting":
         this.removePresenter(participant.id);
@@ -406,23 +415,30 @@ class Room {
     }
   }
 
-  private present(participant: Participant, resume: boolean): void {
+  private present(participant: Participant, resume: boolean, replace: string | undefined): void {
     let presenter = this.presenterOf(participant.id);
 
     if (resume && presenter == null) {
       // Someone else took the seat while the sender was disconnected
-      sendTo(participant, { type: "presentrejected" });
+      sendTo(participant, { type: "presentrejected", reason: "seat-lost" });
       return;
+    }
+
+    if (presenter == null && this.presenters.length >= MAX_PRESENTERS) {
+      // A full room only takes a new presenter in place of one that the sender chose
+      const replaced = replace === undefined || replace === participant.id ? undefined : this.presenterOf(replace);
+
+      if (replaced == null) {
+        sendTo(participant, { type: "presentrejected", reason: "full" });
+        return;
+      }
+
+      this.removePresenter(replaced.participantId);
     }
 
     const streamId = (this.nextStreamId++).toString();
 
     if (presenter == null) {
-      while (this.presenters.length >= MAX_PRESENTERS) {
-        const oldest = this.presenters[0];
-        this.removePresenter(oldest.participantId);
-      }
-
       presenter = { participantId: participant.id, streamId, hidden: false, status: "live", disconnectReason: null };
       this.presenters.push(presenter);
     } else {
@@ -639,7 +655,7 @@ function instanceOfClientMessage(object: unknown): object is ClientMessage {
     case "setname":
       return typeof object.name === "string";
     case "present":
-      return typeof object.resume === "boolean";
+      return typeof object.resume === "boolean" && (object.replace === undefined || typeof object.replace === "string");
     case "stoppresenting":
       return true;
     case "streamstate":

@@ -248,7 +248,8 @@ const PAGE_STATE = `(() => {
     noticeText: [...document.querySelectorAll(".notice:not(.hidden) p")].map((p) => p.textContent.trim().replace(/\\s+/g, " ")),
     dialogOpen: document.getElementById("present-dialog").open,
     dialogMode: [...document.querySelectorAll("#present-dialog h1[data-mode]")].find((e) => !e.classList.contains("hidden"))?.dataset.mode ?? null,
-    warning: document.getElementById("present-takeover-warning").classList.contains("hidden") ? null : document.getElementById("present-takeover-warning").textContent.trim().replace(/\\s+/g, " "),
+    // The presenters to choose from in a full room, or null when the dialog does not ask
+    replaceOptions: document.getElementById("present-replace").classList.contains("hidden") ? null : [...document.querySelectorAll("#present-replace-options label")].map((label) => ({ name: label.textContent.trim(), checked: label.querySelector("input").checked })),
     nameValue: document.getElementById("present-name").value,
     toolbar: visible("#toolbar button, #viewer-count"),
     viewers: document.getElementById("viewer-count-value").textContent,
@@ -439,7 +440,7 @@ async function main() {
     await a.goto(`${ORIGIN}/`);
     const s = await a.waitFor("start dialog", (s) => s.dialogOpen && s.dialogMode === "start");
     assert.match(s.hash, /^#[A-Z][a-zA-Z]+$/);
-    assert.equal(s.warning, null);
+    assert.equal(s.replaceOptions, null);
     room = s.hash;
     await a.shot("1-start-dialog-en");
   });
@@ -467,7 +468,7 @@ async function main() {
   await step("viewer takes over after the confirmation dialog", async () => {
     await b.click("#present-button");
     const s = await b.waitFor("takeover dialog", (s) => s.dialogOpen);
-    assert.match(s.warning, /Alice/);
+    assert.deepEqual(s.replaceOptions, [{ name: "Alice", checked: true }]);
     await b.shot("4-takeover-dialog-ja");
     await b.submitDialog("Bob");
     await b.waitFor("B presenting", (s) => s.videoLocal && s.toolbar.includes("stop-button"));
@@ -495,7 +496,7 @@ async function main() {
     await a.click("#present-button");
     const s = await a.waitFor("dialog with stored name", (s) => s.dialogOpen);
     assert.equal(s.nameValue, "Alice", "name remembered");
-    assert.equal(s.warning, null);
+    assert.equal(s.replaceOptions, null);
     await a.submitDialog("Alice");
     await b.waitFor("B viewing A", (s) => s.videoPlaying);
     await a.click("#stop-button");
@@ -573,7 +574,7 @@ async function main() {
     await b.waitFor("B sees resuming", (s) => s.status === "status-presenter-resuming");
     await b.click("#present-button");
     const sb = await b.waitFor("B dialog", (s) => s.dialogOpen);
-    assert.match(sb.warning, /Alice/);
+    assert.deepEqual(sb.replaceOptions, [{ name: "Alice", checked: true }]);
     await b.submitDialog("Bob");
     await b.waitFor("B presenting", (s) => s.videoLocal);
     const sa = await a.waitFor(
@@ -1372,6 +1373,30 @@ async function main() {
     const sf = await f.waitFor("F presenting", (s) => s.videoLocal && s.toolbar.includes("hide-button"));
     assert.ok(!sf.toolbar.includes("blur-button") && !sf.toolbar.includes("unblur-button"));
     await cdp.send("Target.closeTarget", { targetId: f.targetId });
+  });
+
+  await step("a room that filled up while the dialog was open turns the new presenter away", async () => {
+    const g = await newPage(cdp, "G");
+    await g.goto(`${ORIGIN}/${room}`);
+    await g.waitFor("G joined", (s) => s.status === "status-waiting");
+    await g.click("#present-button");
+    const sg = await g.waitFor("G dialog", (s) => s.dialogOpen);
+    assert.equal(sg.replaceOptions, null, "nobody presents yet");
+
+    await a.click("#present-button");
+    await a.waitFor("A dialog", (s) => s.dialogOpen);
+    await a.submitDialog("Alice");
+    await a.waitFor("A presenting", (s) => s.videoLocal);
+
+    await g.submitDialog("Gina");
+    const sg2 = await g.waitFor("G notified", (s) => s.notices.includes("notice-full"));
+    assert.equal(sg2.noticeText[0], "The room is full of presenters now. Try again.");
+    assert.ok(!sg2.toolbar.includes("stop-button") && !sg2.captureLive);
+    assert.ok((await a.state()).videoLocal, "A still presents");
+    await b.waitFor("B viewing A", (s) => s.videoPlaying, 15000);
+    await cdp.send("Target.closeTarget", { targetId: g.targetId });
+    await a.click("#stop-button");
+    await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");

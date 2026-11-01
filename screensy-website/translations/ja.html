@@ -233,6 +233,12 @@
                     ×
                 </button>
             </div>
+            <div id="notice-full" class="notice hidden" role="status">
+                <p>配信できる人数がいっぱいになりました。もう一度お試しください。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
             <div id="notice-access-denied" class="notice hidden" role="status">
                 <p>
                     画面にアクセスできませんでした。ブラウザがアクセスを求めてこない場合は、ブラウザの設定を見直して下さい。
@@ -249,9 +255,12 @@
                 <p data-mode="resume">
                     ページを再読み込みする前に配信していました。続けるには、もう一度画面を選んで下さい。
                 </p>
-                <p id="present-takeover-warning" class="hidden">
-                    <span class="name-slot"></span>さんが配信中です。開始すると、配信を引き継ぎます。
-                </p>
+                <fieldset id="present-replace" class="hidden">
+                    <legend>
+                        配信できるのは<span class="max-slot"></span>人までです。交代する人を選んでください。
+                    </legend>
+                    <div id="present-replace-options"></div>
+                </fieldset>
                 <label for="present-name">あなたの名前</label>
                 <input
                     id="present-name"
