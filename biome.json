@@ -12,7 +12,11 @@
     "rules": {
       "preset": "recommended",
       "complexity": {
-        "noExcessiveCognitiveComplexity": "off"
+        "noExcessiveCognitiveComplexity": "off",
+        "useArrowFunction": "error"
+      },
+      "nursery": {
+        "useConsistentFunctionStyle": { "level": "error", "options": { "style": "expression" } }
       },
       "correctness": {
         "noNodejsModules": "off",

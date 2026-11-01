@@ -87,6 +87,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   Use `basic_auth` instead of the deprecated `basicauth` in the Caddyfile.
 -   The website container now serves files only from its own directory, instead
     of from the root of the filesystem.
+-   The server and the browser client share the protocol as Zod schemas in a
+    new workspace package, "screensy-protocol", and validate every message
+    they receive with them, including the WebRTC payload of a signal.
+-   Split the browser client into modules, bundled with esbuild into a
+    minified "screensy.js" with a source map.
 
 ### Removed
 

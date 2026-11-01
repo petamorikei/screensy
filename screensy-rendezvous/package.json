@@ -22,6 +22,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "screensy-protocol": "workspace:*",
     "ws": "^8.22.0"
   },
   "devDependencies": {

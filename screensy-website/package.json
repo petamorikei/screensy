@@ -4,10 +4,15 @@
   "description": "The website and browser client for screensy",
   "license": "GPL-3.0-or-later",
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "build": "node build.mjs",
+    "typecheck": "tsc"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "screensy-protocol": "workspace:*",
+    "zod": "^4.6.7"
   }
 }

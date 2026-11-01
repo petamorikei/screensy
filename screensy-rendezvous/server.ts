@@ -1,6 +1,26 @@
 import { randomUUID } from "node:crypto";
+import type {
+  ClientMessage,
+  DisconnectReason,
+  MessageJoin,
+  MessageRoomState,
+  MessageSignalToServer,
+  PresenterState,
+  ServerMessage,
+} from "screensy-protocol";
+import { ClientMessageSchema, JoinSchema } from "screensy-protocol";
 import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
+
+/**
+ * Reads a positive integer from an environment variable. Used to shorten the timers when testing. Defined first,
+ * because the constants below use it.
+ */
+const numberFromEnv = (name: string, fallback: number): number => {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+};
 
 const PORT = 4000;
 
@@ -35,161 +55,12 @@ const PING_INTERVAL_MS = numberFromEnv("SCREENSY_PING_INTERVAL_MS", 15_000);
 const MAX_PRESENTERS = numberFromEnv("SCREENSY_MAX_PRESENTERS", 4);
 
 const MAX_NAME_LENGTH = 32;
-const MAX_ROOM_ID_LENGTH = 256;
 const MAX_PAYLOAD_BYTES = 64 * 1024;
-
-type SignalKind = "offer" | "answer" | "candidate";
-
-// Messages from the client to the server
-
-/**
- * Joins a room. A resume token from an earlier "welcome" takes over that participant.
- */
-interface MessageJoin {
-  type: "join";
-  roomId: string;
-  name: string;
-  resumeToken?: string;
-}
-
-interface MessageSetName {
-  type: "setname";
-  name: string;
-}
-
-/**
- * Starts presenting, after the client has captured its screen. With resume, the server only accepts it when the
- * sender still holds a presenter seat.
- */
-interface MessagePresent {
-  type: "present";
-  resume: boolean;
-  /**
-   * The presenter to take over when the room has reached MAX_PRESENTERS. Ignored below the limit.
-   */
-  replace?: string;
-}
-
-interface MessageStopPresenting {
-  type: "stoppresenting";
-}
-
-interface MessageStreamState {
-  type: "streamstate";
-  streamId: string;
-  hidden: boolean;
-}
-
-/**
- * Sends a WebRTC message to another participant. Either the sender or the recipient must be the presenter of the
- * stream.
- */
-interface MessageSignalToServer {
-  type: "signal";
-  to: string;
-  toConnection: string;
-  streamId: string;
-  kind: SignalKind;
-  message: unknown;
-}
-
-type ClientMessage =
-  | MessageSetName
-  | MessagePresent
-  | MessageStopPresenting
-  | MessageStreamState
-  | MessageSignalToServer;
-
-// Messages from the server to the client
-
-interface MessageWelcome {
-  type: "welcome";
-  selfId: string;
-  connectionId: string;
-  resumeToken: string;
-  /**
-   * MAX_PRESENTERS, so that the client knows when the room is full
-   */
-  maxPresenters: number;
-}
-
-interface ParticipantState {
-  id: string;
-  connectionId: string;
-  name: string;
-  connected: boolean;
-}
-
-/**
- * Why a presenter seat is reconnecting: "left" if the page closed its socket (a reload or a closed tab), "lost" if the
- * connection broke.
- */
-type DisconnectReason = "left" | "lost";
-
-interface PresenterState {
-  participantId: string;
-  streamId: string;
-  hidden: boolean;
-  status: "live" | "reconnecting";
-  /**
-   * Null while the seat is live
-   */
-  disconnectReason: DisconnectReason | null;
-  /**
-   * The time left before the seat is freed, or null if no grace period runs. A presenter who has reconnected but not
-   * resumed yet keeps the seat without a time limit.
-   */
-  graceRemainingMs: number | null;
-}
 
 /**
  * A presenter seat as the room stores it. The remaining grace period is computed from the participant when sent.
  */
 type Presenter = Omit<PresenterState, "graceRemainingMs">;
-
-interface MessageRoomState {
-  type: "roomstate";
-  participants: ParticipantState[];
-  presenters: PresenterState[];
-}
-
-interface MessageSignalFromServer {
-  type: "signal";
-  from: string;
-  fromConnection: string;
-  streamId: string;
-  kind: SignalKind;
-  message: unknown;
-}
-
-interface MessagePresentAccepted {
-  type: "presentaccepted";
-  streamId: string;
-}
-
-interface MessagePresentRejected {
-  type: "presentrejected";
-  /**
-   * "seat-lost": a resume, but the sender no longer has a seat. "full": the room has reached MAX_PRESENTERS, and
-   * "replace" does not name one of the presenters.
-   */
-  reason: "seat-lost" | "full";
-}
-
-/**
- * Tells a socket that another socket has joined with its resume token.
- */
-interface MessageReplaced {
-  type: "replaced";
-}
-
-type ServerMessage =
-  | MessageWelcome
-  | MessageRoomState
-  | MessageSignalFromServer
-  | MessagePresentAccepted
-  | MessagePresentRejected
-  | MessageReplaced;
 
 interface Participant {
   readonly id: string;
@@ -207,7 +78,7 @@ interface Participant {
 /**
  * The main entry point.
  */
-function main(): void {
+const main = (): void => {
   const webSocketServer = new WebSocketServer({ port: PORT, maxPayload: MAX_PAYLOAD_BYTES });
   const server = new Server();
   const alive = new WeakSet<WebSocket>();
@@ -236,7 +107,7 @@ function main(): void {
   webSocketServer.on("close", () => clearInterval(heartbeat));
 
   console.log(`Server started on port ${PORT}`);
-}
+};
 
 class Server {
   private readonly rooms = new Map<string, Room>();
@@ -246,9 +117,9 @@ class Server {
    */
   onConnection(socket: WebSocket): void {
     const onFirstMessage = (data: RawData) => {
-      const message = parseMessage(data);
+      const message = parseJoin(data);
 
-      if (!instanceOfMessageJoin(message)) {
+      if (message == null) {
         // No messages are valid until a client has sent a "join"
         return;
       }
@@ -376,9 +247,9 @@ class Room {
     participant.socket = socket;
 
     socket.on("message", (data: RawData) => {
-      const message = parseMessage(data);
+      const message = parseClientMessage(data);
 
-      if (instanceOfClientMessage(message)) {
+      if (message != null) {
         this.handleMessage(participant, message);
       }
     });
@@ -500,14 +371,9 @@ class Room {
       return;
     }
 
-    send(recipient.socket, {
-      type: "signal",
-      from: sender.id,
-      fromConnection: sender.connectionId,
-      streamId: message.streamId,
-      kind: message.kind,
-      message: message.message,
-    });
+    // The stream ID and the WebRTC payload (kind and message) go through as they are
+    const { to: _to, toConnection: _toConnection, ...signal } = message;
+    send(recipient.socket, { ...signal, from: sender.id, fromConnection: sender.connectionId });
   }
 
   private handleDisconnect(participant: Participant, reason: DisconnectReason): void {
@@ -574,108 +440,52 @@ class Room {
   }
 }
 
-function clearGrace(participant: Participant): void {
+const clearGrace = (participant: Participant): void => {
   if (participant.graceTimer != null) {
     clearTimeout(participant.graceTimer);
   }
 
   participant.graceTimer = null;
   participant.graceDeadline = null;
-}
+};
 
-function send(socket: WebSocket, message: ServerMessage): void {
+const send = (socket: WebSocket, message: ServerMessage): void => {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
   }
-}
+};
 
-function sendTo(participant: Participant, message: ServerMessage): void {
+const sendTo = (participant: Participant, message: ServerMessage): void => {
   if (participant.socket != null) {
     send(participant.socket, message);
   }
-}
+};
 
 /**
  * Parses a WebSocket message as JSON. Returns undefined if it is not valid JSON.
  */
-function parseMessage(data: RawData): unknown {
+const parseMessage = (data: RawData): unknown => {
   try {
     return JSON.parse(data.toString());
   } catch {
     return undefined;
   }
-}
+};
+
+/**
+ * Returns the message if it is a valid "join", or null
+ */
+const parseJoin = (data: RawData): MessageJoin | null => JoinSchema.safeParse(parseMessage(data)).data ?? null;
+
+/**
+ * Returns the message if it is a valid message after "join", or null
+ */
+const parseClientMessage = (data: RawData): ClientMessage | null =>
+  ClientMessageSchema.safeParse(parseMessage(data)).data ?? null;
 
 /**
  * Trims the name and limits it to MAX_NAME_LENGTH code points.
  */
-function normalizeName(name: unknown): string {
-  if (typeof name !== "string") {
-    return "";
-  }
-
-  return [...name.trim()].slice(0, MAX_NAME_LENGTH).join("").trim();
-}
-
-/**
- * Reads a positive integer from an environment variable. Used to shorten the timers when testing.
- */
-function numberFromEnv(name: string, fallback: number): number {
-  const value = Number.parseInt(process.env[name] ?? "", 10);
-
-  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-/**
- * Returns true if and only if the given value is a non-null, non-array object.
- */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function instanceOfKind(value: unknown): value is SignalKind {
-  return value === "offer" || value === "answer" || value === "candidate";
-}
-
-function instanceOfMessageJoin(object: unknown): object is MessageJoin {
-  if (!isObject(object)) {
-    return false;
-  }
-
-  const goodType = object.type === "join";
-  const goodRoomId =
-    typeof object.roomId === "string" && object.roomId.length >= 1 && object.roomId.length <= MAX_ROOM_ID_LENGTH;
-  const goodName = typeof object.name === "string";
-  const goodResumeToken = object.resumeToken === undefined || typeof object.resumeToken === "string";
-
-  return goodType && goodRoomId && goodName && goodResumeToken;
-}
-
-function instanceOfClientMessage(object: unknown): object is ClientMessage {
-  if (!isObject(object)) {
-    return false;
-  }
-
-  switch (object.type) {
-    case "setname":
-      return typeof object.name === "string";
-    case "present":
-      return typeof object.resume === "boolean" && (object.replace === undefined || typeof object.replace === "string");
-    case "stoppresenting":
-      return true;
-    case "streamstate":
-      return typeof object.streamId === "string" && typeof object.hidden === "boolean";
-    case "signal":
-      return (
-        typeof object.to === "string" &&
-        typeof object.toConnection === "string" &&
-        typeof object.streamId === "string" &&
-        instanceOfKind(object.kind) &&
-        "message" in object
-      );
-    default:
-      return false;
-  }
-}
+const normalizeName = (name: string): string => [...name.trim()].slice(0, MAX_NAME_LENGTH).join("").trim();
 
 main();
