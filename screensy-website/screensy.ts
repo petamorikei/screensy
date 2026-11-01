@@ -237,7 +237,8 @@ type NoticeId =
   | "notice-moved-to-other-tab"
   | "notice-connection-lost"
   | "notice-access-denied"
-  | "notice-switch-failed";
+  | "notice-switch-failed"
+  | "notice-blur-failed";
 
 type DialogMode = "start" | "resume";
 
@@ -590,21 +591,144 @@ interface OutgoingPeer {
   applyingQuality: Promise<void>;
 }
 
+// The "breakout box" of Chrome and Edge, which lib.dom does not declare yet. Its streams keep running when the tab is
+// in the background, unlike requestAnimationFrame and timers.
+declare class MediaStreamTrackProcessor {
+  constructor(init: { track: MediaStreamTrack });
+  readonly readable: ReadableStream<VideoFrame>;
+}
+
+declare class MediaStreamTrackGenerator extends MediaStreamTrack {
+  constructor(init: { kind: "video" });
+  readonly writable: WritableStream<VideoFrame>;
+}
+
 /**
- * A screen capture and the tracks sent from it. The preview shows the same tracks, so that the presenter sees exactly
- * what the viewers get, including the black screen while hidden.
+ * Whether this browser can blur the screen
+ */
+function isBlurSupported(): boolean {
+  return "MediaStreamTrackProcessor" in window && "MediaStreamTrackGenerator" in window && "OffscreenCanvas" in window;
+}
+
+/**
+ * The blur shrinks each frame to this fraction of its size, which removes the details, and scales it up again
+ */
+const BLUR_SAMPLE_DIVISOR = 24;
+
+/**
+ * The blurred video is sent at this fraction of the capture's size. It has no details to keep.
+ */
+const BLUR_OUTPUT_DIVISOR = 4;
+
+/**
+ * Smooths the scaled-up frame. The frame is drawn this much larger on each side, so that the blur does not darken the
+ * edges.
+ */
+const BLUR_SMOOTHING_PX = 4;
+
+/**
+ * Turns a video track into a strongly blurred one: text cannot be read, but the layout and movement can be seen
+ */
+class BlurProcessor {
+  /**
+   * The blurred video
+   */
+  readonly track: MediaStreamTrack;
+
+  private readonly abort = new AbortController();
+
+  constructor(source: MediaStreamTrack) {
+    const processor = new MediaStreamTrackProcessor({ track: source });
+    const generator = new MediaStreamTrackGenerator({ kind: "video" });
+    const sample = new OffscreenCanvas(2, 2);
+    const output = new OffscreenCanvas(2, 2);
+    const sampleContext = sample.getContext("2d");
+    const outputContext = output.getContext("2d");
+
+    if (sampleContext == null || outputContext == null) {
+      throw new Error("No 2D canvas for the blur.");
+    }
+
+    this.track = generator;
+
+    const blur = new TransformStream<VideoFrame, VideoFrame>({
+      transform: (frame, controller) => {
+        try {
+          const width = frame.displayWidth;
+          const height = frame.displayHeight;
+          resizeCanvas(sample, width / BLUR_SAMPLE_DIVISOR, height / BLUR_SAMPLE_DIVISOR);
+          resizeCanvas(output, width / BLUR_OUTPUT_DIVISOR, height / BLUR_OUTPUT_DIVISOR);
+
+          sampleContext.imageSmoothingEnabled = true;
+          sampleContext.imageSmoothingQuality = "high";
+          sampleContext.drawImage(frame, 0, 0, sample.width, sample.height);
+
+          const margin = BLUR_SMOOTHING_PX * 2;
+          outputContext.imageSmoothingEnabled = true;
+          outputContext.imageSmoothingQuality = "high";
+          outputContext.filter = `blur(${BLUR_SMOOTHING_PX}px)`;
+          outputContext.drawImage(sample, -margin, -margin, output.width + margin * 2, output.height + margin * 2);
+
+          controller.enqueue(new VideoFrame(output, { timestamp: frame.timestamp }));
+        } finally {
+          frame.close();
+        }
+      },
+    });
+
+    // Ends by itself when the capture ends
+    processor.readable
+      .pipeThrough(blur, { signal: this.abort.signal })
+      .pipeTo(generator.writable, { signal: this.abort.signal })
+      .catch(() => {});
+  }
+
+  stop(): void {
+    this.abort.abort();
+    this.track.stop();
+  }
+}
+
+/**
+ * Resizes a canvas to whole pixels, at least 2 by 2, only when the size changes (resizing clears it)
+ */
+function resizeCanvas(canvas: OffscreenCanvas, width: number, height: number): void {
+  const newWidth = Math.max(2, Math.round(width));
+  const newHeight = Math.max(2, Math.round(height));
+
+  if (canvas.width !== newWidth || canvas.height !== newHeight) {
+    canvas.width = newWidth;
+    canvas.height = newHeight;
+  }
+}
+
+/**
+ * A screen capture and the tracks sent from it. The preview shows what is sent, so that the presenter sees exactly
+ * what the viewers get, including the black screen while hidden and the blur.
  */
 interface Capture {
   stream: MediaStream;
-  sendVideo: MediaStreamTrack | null;
-  sendAudio: MediaStreamTrack | null;
+  video: MediaStreamTrack | null;
+  audio: MediaStreamTrack | null;
+  /**
+   * Blurs the video while the presenter wants it blurred
+   */
+  blur: BlurProcessor | null;
+  /**
+   * The capture itself, or a stream of the blurred video
+   */
+  preview: MediaStream;
 }
 
-function prepareCapture(stream: MediaStream, hidden: boolean): Capture {
+function prepareCapture(stream: MediaStream, hidden: boolean, blurred: boolean): Capture {
+  const video = stream.getVideoTracks()[0] ?? null;
+  const blur = blurred && video != null ? new BlurProcessor(video) : null;
   const capture: Capture = {
     stream,
-    sendVideo: stream.getVideoTracks()[0] ?? null,
-    sendAudio: stream.getAudioTracks()[0] ?? null,
+    video,
+    audio: stream.getAudioTracks()[0] ?? null,
+    blur,
+    preview: blur == null ? stream : new MediaStream([blur.track]),
   };
 
   // Before the tracks reach any sender, so that a hidden presentation never leaks a frame
@@ -613,8 +737,19 @@ function prepareCapture(stream: MediaStream, hidden: boolean): Capture {
   return capture;
 }
 
+/**
+ * The video track that the senders get: the blurred one while blurred
+ */
+function sentVideo(capture: Capture): MediaStreamTrack | null {
+  return capture.blur?.track ?? capture.video;
+}
+
+/**
+ * Hiding disables every track, including the input of the blur, so that turning the blur on or off while hidden
+ * never shows the screen.
+ */
 function setCaptureHidden(capture: Capture, hidden: boolean): void {
-  for (const track of [capture.sendVideo, capture.sendAudio]) {
+  for (const track of [capture.video, capture.blur?.track, capture.audio]) {
     if (track != null) {
       track.enabled = !hidden;
     }
@@ -622,6 +757,8 @@ function setCaptureHidden(capture: Capture, hidden: boolean): void {
 }
 
 function stopCapture(capture: Capture): void {
+  capture.blur?.stop();
+
   for (const track of capture.stream.getTracks()) {
     track.stop();
   }
@@ -653,6 +790,7 @@ class OutgoingStream {
   private readonly sendStream = new MediaStream();
 
   private isHidden = false;
+  private isBlurred = false;
   private stopped = false;
 
   /**
@@ -669,7 +807,7 @@ class OutgoingStream {
     quality: QualitySettings,
   ) {
     this.quality = quality;
-    this.capture = prepareCapture(mediaStream, false);
+    this.capture = prepareCapture(mediaStream, false, false);
     this.tuneCapture(this.capture);
     this.rtcConfig = rtcConfig;
     this.sendMessage = sendMessage;
@@ -710,8 +848,19 @@ class OutgoingStream {
     return this.capture.stream;
   }
 
+  /**
+   * What the preview shows: the same video as the viewers get
+   */
+  get previewStream(): MediaStream {
+    return this.capture.preview;
+  }
+
   get hidden(): boolean {
     return this.isHidden;
+  }
+
+  get blurred(): boolean {
+    return this.isBlurred;
   }
 
   /**
@@ -734,27 +883,105 @@ class OutgoingStream {
    */
   async replaceCapture(mediaStream: MediaStream): Promise<boolean> {
     if (this.stopped || this.pending != null) {
-      stopCapture({ stream: mediaStream, sendVideo: null, sendAudio: null });
+      for (const track of mediaStream.getTracks()) {
+        track.stop();
+      }
+
       return false;
     }
 
-    const previous = this.capture;
-    const next = prepareCapture(mediaStream, this.isHidden);
+    let next: Capture;
+
+    try {
+      next = prepareCapture(mediaStream, this.isHidden, this.isBlurred);
+    } catch (error) {
+      console.warn("Could not prepare the new capture.", error);
+
+      for (const track of mediaStream.getTracks()) {
+        track.stop();
+      }
+
+      return false;
+    }
+
     this.tuneCapture(next);
+
+    return this.changeCapture(
+      next,
+      () => stopCapture(next),
+      (previous) => stopCapture(previous),
+    );
+  }
+
+  /**
+   * Blurs the screen for the viewers and in the preview, or shows it sharp again. Like a switch, it goes back if any
+   * connection rejects the new track.
+   */
+  async setBlurred(blurred: boolean): Promise<boolean> {
+    if (this.stopped || this.pending != null) {
+      return false;
+    }
+
+    if (blurred === this.isBlurred) {
+      return true;
+    }
+
+    const current = this.capture;
+
+    if (current.video == null) {
+      return false;
+    }
+
+    let blur: BlurProcessor | null = null;
+
+    try {
+      blur = blurred ? new BlurProcessor(current.video) : null;
+    } catch (error) {
+      console.warn("Could not blur the screen.", error);
+      return false;
+    }
+
+    const next: Capture = { ...current, blur, preview: blur == null ? current.stream : new MediaStream([blur.track]) };
+    setCaptureHidden(next, this.isHidden);
+
+    const changed = await this.changeCapture(
+      next,
+      () => blur?.stop(),
+      (previous) => previous.blur?.stop(),
+    );
+
+    if (changed) {
+      this.isBlurred = blurred;
+    }
+
+    return changed;
+  }
+
+  /**
+   * Replaces the tracks of every connection with those of the next capture. If any connection rejects them, every
+   * connection goes back to the current capture, discard() releases the next one, and the result is false. Otherwise,
+   * release() gets the previous capture.
+   */
+  private async changeCapture(
+    next: Capture,
+    discard: () => void,
+    release: (previous: Capture) => void,
+  ): Promise<boolean> {
+    const previous = this.capture;
     this.pending = next;
 
     const peers = [...this.peers.values()];
     const results = await Promise.allSettled(
       peers.map(async (peer) => {
-        await peer.videoSender.replaceTrack(next.sendVideo);
-        await peer.audioSender.replaceTrack(next.sendAudio);
+        await peer.videoSender.replaceTrack(sentVideo(next));
+        await peer.audioSender.replaceTrack(next.audio);
       }),
     );
 
     this.pending = null;
 
     if (this.stopped) {
-      stopCapture(next);
+      discard();
       return false;
     }
 
@@ -764,21 +991,21 @@ class OutgoingStream {
     if (failed) {
       await Promise.allSettled(
         [...this.peers.values()].map(async (peer) => {
-          await peer.videoSender.replaceTrack(previous.sendVideo);
-          await peer.audioSender.replaceTrack(previous.sendAudio);
+          await peer.videoSender.replaceTrack(sentVideo(previous));
+          await peer.audioSender.replaceTrack(previous.audio);
         }),
       );
 
-      stopCapture(next);
+      discard();
       return false;
     }
 
     this.capture = next;
-    stopCapture(previous);
+    release(previous);
 
-    // Connections opened during the switch still send the previous capture. Reopen them.
+    // Connections opened during the change still send the previous tracks. Reopen them.
     for (const [participantId, peer] of this.peers) {
-      if (peer.videoSender.track !== next.sendVideo || peer.audioSender.track !== next.sendAudio) {
+      if (peer.videoSender.track !== sentVideo(next) || peer.audioSender.track !== next.audio) {
         peer.link.close();
         this.peers.delete(participantId);
       }
@@ -788,7 +1015,7 @@ class OutgoingStream {
       this.sync(this.lastSync.participants, this.lastSync.selfId);
     }
 
-    // The new capture may have another height, and a sender that had no track, such as the audio of a capture without
+    // The new track may have another height, and a sender that had no track, such as the audio of a capture without
     // audio, has no limits yet
     this.applyQualityToPeers();
 
@@ -892,7 +1119,7 @@ class OutgoingStream {
    * still apply.
    */
   private tuneCapture(capture: Capture): void {
-    const video = capture.sendVideo;
+    const video = capture.video;
 
     if (video == null) {
       return;
@@ -944,8 +1171,8 @@ class OutgoingStream {
     const link = new PeerLink(this.rtcConfig);
     const connection = link.connection;
     const options: RTCRtpTransceiverInit = { direction: "sendonly", streams: [this.sendStream] };
-    const video = connection.addTransceiver(this.capture.sendVideo ?? "video", options);
-    const audio = connection.addTransceiver(this.capture.sendAudio ?? "audio", options);
+    const video = connection.addTransceiver(sentVideo(this.capture) ?? "video", options);
+    const audio = connection.addTransceiver(this.capture.audio ?? "audio", options);
 
     const peer: OutgoingPeer = {
       connectionId,
@@ -1263,6 +1490,7 @@ class Ui {
    */
   public onswitch: (() => void) | null = null;
   public onhide: ((hidden: boolean) => void) | null = null;
+  public onblur: ((blurred: boolean) => void) | null = null;
   public onqualitychange: ((quality: QualitySettings) => void) | null = null;
   /**
    * The size of the video changed, for example when the presenter resizes the shared window
@@ -1284,6 +1512,8 @@ class Ui {
   private readonly switchButton: HTMLButtonElement;
   private readonly hideButton: HTMLButtonElement;
   private readonly showButton: HTMLButtonElement;
+  private readonly blurButton: HTMLButtonElement;
+  private readonly unblurButton: HTMLButtonElement;
   private readonly frameRateSelect: HTMLSelectElement;
   private readonly resolutionSelect: HTMLSelectElement;
   private readonly bitrateInput: HTMLInputElement;
@@ -1324,6 +1554,8 @@ class Ui {
     this.switchButton = getElement("switch-button", HTMLButtonElement);
     this.hideButton = getElement("hide-button", HTMLButtonElement);
     this.showButton = getElement("show-button", HTMLButtonElement);
+    this.blurButton = getElement("blur-button", HTMLButtonElement);
+    this.unblurButton = getElement("unblur-button", HTMLButtonElement);
     this.frameRateSelect = getElement("quality-frame-rate", HTMLSelectElement);
     this.resolutionSelect = getElement("quality-resolution", HTMLSelectElement);
     this.bitrateInput = getElement("quality-bitrate", HTMLInputElement);
@@ -1363,6 +1595,8 @@ class Ui {
     this.switchButton.addEventListener("click", () => this.onswitch?.());
     this.hideButton.addEventListener("click", () => this.onhide?.(true));
     this.showButton.addEventListener("click", () => this.onhide?.(false));
+    this.blurButton.addEventListener("click", () => this.onblur?.(true));
+    this.unblurButton.addEventListener("click", () => this.onblur?.(false));
 
     this.frameRateSelect.addEventListener("change", () => {
       const frameRate = Number(this.frameRateSelect.value);
@@ -1637,16 +1871,25 @@ class Ui {
     canPresent: boolean;
     presenting: boolean;
     hidden: boolean;
-    switching: boolean;
+    blurred: boolean;
+    canBlur: boolean;
+    /**
+     * A switch or a blur change is in progress
+     */
+    busy: boolean;
     viewers: number;
   }): void {
     this.toolbar.classList.toggle("hidden", !options.visible);
     this.presentButton.classList.toggle("hidden", !options.canPresent);
     this.stopButton.classList.toggle("hidden", !options.presenting);
     this.switchButton.classList.toggle("hidden", !options.presenting);
-    this.switchButton.disabled = options.switching;
+    this.switchButton.disabled = options.busy;
     this.hideButton.classList.toggle("hidden", !options.presenting || options.hidden);
     this.showButton.classList.toggle("hidden", !options.presenting || !options.hidden);
+    this.blurButton.classList.toggle("hidden", !options.presenting || !options.canBlur || options.blurred);
+    this.unblurButton.classList.toggle("hidden", !options.presenting || !options.canBlur || !options.blurred);
+    this.blurButton.disabled = options.busy;
+    this.unblurButton.disabled = options.busy;
     this.viewerCount.classList.toggle("hidden", !options.presenting);
     this.viewerCountValue.textContent = options.viewers.toString();
   }
@@ -1744,9 +1987,12 @@ class RoomController {
   private countdownTimer: number | null = null;
 
   /**
-   * From the click on "Switch screen" until the switch is done or abandoned
+   * From the click on "Switch screen" until the switch is done or abandoned, or while the blur is turned on or off.
+   * Only one of them runs at a time.
    */
-  private switchInProgress = false;
+  private trackChangeInProgress = false;
+
+  private readonly canBlur = isBlurSupported();
 
   private quality: QualitySettings;
 
@@ -1797,6 +2043,7 @@ class RoomController {
     this.ui.oncancel = () => this.cancelDialog();
     this.ui.onswitch = () => this.switchScreen();
     this.ui.onhide = (hidden: boolean) => this.setHidden(hidden);
+    this.ui.onblur = (blurred: boolean) => this.setBlurred(blurred);
     this.ui.onqualitychange = (quality: QualitySettings) => this.changeQuality(quality);
     this.ui.onvideoresize = () => this.outgoing?.refreshQuality();
     this.ui.onnamechange = (name: string) => this.changeName(name);
@@ -2120,7 +2367,7 @@ class RoomController {
   private switchScreen(): void {
     const outgoing = this.outgoing;
 
-    if (outgoing == null || this.switchInProgress) {
+    if (outgoing == null || this.trackChangeInProgress) {
       return;
     }
 
@@ -2133,7 +2380,7 @@ class RoomController {
       capture = Promise.reject(error);
     }
 
-    this.switchInProgress = true;
+    this.trackChangeInProgress = true;
     this.render();
 
     capture
@@ -2167,7 +2414,7 @@ class RoomController {
         },
       )
       .finally(() => {
-        this.switchInProgress = false;
+        this.trackChangeInProgress = false;
         this.render();
       });
   }
@@ -2266,6 +2513,29 @@ class RoomController {
     this.outgoing?.setQuality(quality);
   }
 
+  private setBlurred(blurred: boolean): void {
+    const outgoing = this.outgoing;
+
+    if (outgoing == null || this.trackChangeInProgress) {
+      return;
+    }
+
+    this.trackChangeInProgress = true;
+    this.render();
+
+    outgoing
+      .setBlurred(blurred)
+      .then((changed: boolean) => {
+        if (!changed && this.outgoing === outgoing) {
+          this.ui.showNotice("notice-blur-failed");
+        }
+      })
+      .finally(() => {
+        this.trackChangeInProgress = false;
+        this.render();
+      });
+  }
+
   private setHidden(hidden: boolean): void {
     this.outgoing?.setHidden(hidden);
     this.render();
@@ -2332,7 +2602,7 @@ class RoomController {
     let video: MediaStream | null = null;
 
     if (this.outgoing != null) {
-      video = this.outgoing.mediaStream;
+      video = this.outgoing.previewStream;
     }
 
     if (!this.signaling.everConnected) {
@@ -2400,7 +2670,9 @@ class RoomController {
       canPresent: ready && this.canPresent && this.outgoing == null && this.dialogMode == null,
       presenting: this.outgoing != null,
       hidden: this.outgoing?.hidden ?? false,
-      switching: this.switchInProgress,
+      blurred: this.outgoing?.blurred ?? false,
+      canBlur: this.canBlur,
+      busy: this.trackChangeInProgress,
       viewers,
     });
   }
