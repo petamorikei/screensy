@@ -75,7 +75,6 @@
             </button>
             <button
                 id="menu-button"
-                class="hidden"
                 type="button"
                 popovertarget="menu"
             >
@@ -86,6 +85,37 @@
             </span>
         </div>
         <div id="menu" class="menu" popover>
+            <section id="menu-link" class="menu-section">
+                <h2>リンク</h2>
+                <div class="link-row">
+                    <input
+                        id="room-link"
+                        type="text"
+                        readonly
+                        aria-label="このルームへのリンク"
+                    />
+                    <button id="copy-link-button" type="button">コピー</button>
+                </div>
+                <p id="copy-link-done" class="menu-feedback hidden" role="status">
+                    コピーしました。
+                </p>
+                <p id="copy-link-failed" class="menu-feedback hidden" role="status">
+                    コピーできませんでした。選択されたURLをコピーしてください。
+                </p>
+            </section>
+            <section id="menu-name" class="menu-section">
+                <h2><label for="menu-name-input">あなたの名前</label></h2>
+                <input
+                    id="menu-name-input"
+                    type="text"
+                    maxlength="32"
+                    autocomplete="nickname"
+                />
+            </section>
+            <section id="menu-participants" class="menu-section">
+                <h2>参加者（<span class="count-slot">0</span>）</h2>
+                <ul id="participant-list" class="participant-list"></ul>
+            </section>
             <section id="menu-quality" class="menu-section">
                 <h2>画質</h2>
                 <label for="quality-frame-rate">フレームレート</label>
@@ -115,7 +145,7 @@
                 <label for="quality-degradation">優先</label>
                 <select id="quality-degradation">
                     <option value="maintain-resolution">解像度</option>
-                    <option value="maintain-framerate">なめらかさ</option>
+                    <option value="maintain-framerate">フレームレート</option>
                     <option value="balanced">バランス</option>
                 </select>
                 <p class="menu-note">
@@ -227,7 +257,10 @@
                 </div>
             </form>
         </dialog>
-        <span id="text-anonymous" class="hidden">誰か</span>
+        <span id="text-anonymous" class="hidden">ゲスト {number}</span>
+        <span id="text-you" class="hidden">あなた</span>
+        <span id="text-presenting" class="hidden">配信中</span>
+        <span id="text-reconnecting" class="hidden">再接続待ち</span>
         <video
             id="stream"
             autoplay="autoplay"

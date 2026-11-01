@@ -164,6 +164,7 @@ const NAME_STORAGE_KEY = "screensy.name";
 const RESUME_STORAGE_PREFIX = "screensy.resume.";
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
 const NOTICE_TIMEOUT_MS = 10000;
+const COPY_FEEDBACK_MS = 2000;
 
 const QUALITY_STORAGE_KEY = "screensy.quality";
 
@@ -1086,6 +1087,10 @@ class Ui {
    * The size of the video changed, for example when the presenter resizes the shared window
    */
   public onvideoresize: (() => void) | null = null;
+  /**
+   * The name typed in the menu, trimmed. It may be empty.
+   */
+  public onnamechange: ((name: string) => void) | null = null;
   public onconfirm: ((name: string) => void) | null = null;
   public oncancel: (() => void) | null = null;
 
@@ -1097,11 +1102,18 @@ class Ui {
   private readonly switchButton: HTMLButtonElement;
   private readonly hideButton: HTMLButtonElement;
   private readonly showButton: HTMLButtonElement;
-  private readonly menuButton: HTMLButtonElement;
   private readonly frameRateSelect: HTMLSelectElement;
   private readonly resolutionSelect: HTMLSelectElement;
   private readonly bitrateInput: HTMLInputElement;
   private readonly degradationSelect: HTMLSelectElement;
+  private readonly roomLink: HTMLInputElement;
+  private readonly copyLinkDone: HTMLElement;
+  private readonly copyLinkFailed: HTMLElement;
+  private readonly menuNameInput: HTMLInputElement;
+  private readonly participantList: HTMLElement;
+  private readonly participantsSection: HTMLElement;
+  private readonly qualitySection: HTMLElement;
+  private copyFeedbackTimer: number | null = null;
 
   /**
    * The settings shown in the menu. An invalid input goes back to them.
@@ -1113,6 +1125,9 @@ class Ui {
   private readonly dialog: HTMLDialogElement;
   private readonly nameInput: HTMLInputElement;
   private readonly anonymousName: string;
+  private readonly youText: string;
+  private readonly presentingText: string;
+  private readonly reconnectingText: string;
   private readonly noticeTimers = new Map<NoticeId, number>();
 
   constructor() {
@@ -1123,17 +1138,32 @@ class Ui {
     this.switchButton = getElement("switch-button", HTMLButtonElement);
     this.hideButton = getElement("hide-button", HTMLButtonElement);
     this.showButton = getElement("show-button", HTMLButtonElement);
-    this.menuButton = getElement("menu-button", HTMLButtonElement);
     this.frameRateSelect = getElement("quality-frame-rate", HTMLSelectElement);
     this.resolutionSelect = getElement("quality-resolution", HTMLSelectElement);
     this.bitrateInput = getElement("quality-bitrate", HTMLInputElement);
     this.degradationSelect = getElement("quality-degradation", HTMLSelectElement);
+    this.roomLink = getElement("room-link", HTMLInputElement);
+    this.copyLinkDone = getElement("copy-link-done", HTMLElement);
+    this.copyLinkFailed = getElement("copy-link-failed", HTMLElement);
+    this.menuNameInput = getElement("menu-name-input", HTMLInputElement);
+    this.participantList = getElement("participant-list", HTMLElement);
+    this.participantsSection = getElement("menu-participants", HTMLElement);
+    this.qualitySection = getElement("menu-quality", HTMLElement);
     this.viewerCount = getElement("viewer-count", HTMLElement);
     this.viewerCountValue = getElement("viewer-count-value", HTMLElement);
     this.status = getElement("status", HTMLElement);
     this.dialog = getElement("present-dialog", HTMLDialogElement);
     this.nameInput = getElement("present-name", HTMLInputElement);
     this.anonymousName = getElement("text-anonymous", HTMLElement).textContent.trim();
+    this.youText = getElement("text-you", HTMLElement).textContent.trim();
+    this.presentingText = getElement("text-presenting", HTMLElement).textContent.trim();
+    this.reconnectingText = getElement("text-reconnecting", HTMLElement).textContent.trim();
+
+    // The page reloads when the hash changes, so the link stays the same
+    this.roomLink.value = location.href;
+    getElement("copy-link-button", HTMLButtonElement).addEventListener("click", () => this.copyLink());
+
+    this.menuNameInput.addEventListener("change", () => this.onnamechange?.(this.menuNameInput.value.trim()));
 
     this.presentButton.addEventListener("click", () => this.onpresent?.());
     this.stopButton.addEventListener("click", () => this.onstop?.());
@@ -1197,6 +1227,92 @@ class Ui {
   }
 
   /**
+   * Shows the own name in the menu, unless it is being edited
+   */
+  setOwnName(name: string): void {
+    if (document.activeElement !== this.menuNameInput) {
+      this.menuNameInput.value = name;
+    }
+  }
+
+  /**
+   * Lists the participants in the menu. Names come from other people, so they are only ever set as text.
+   */
+  showParticipants(
+    participants: { id: string; name: string; you: boolean; presenting: boolean; reconnecting: boolean }[],
+  ): void {
+    const items = participants.map((participant) => {
+      const item = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "participant-name";
+      name.textContent = this.displayName(participant.name, participant.id);
+      item.append(name);
+
+      const badges: string[] = [];
+
+      if (participant.presenting) {
+        badges.push(participant.reconnecting ? this.reconnectingText : this.presentingText);
+      }
+
+      if (participant.you) {
+        badges.push(this.youText);
+      }
+
+      for (const text of badges) {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = text;
+        item.append(badge);
+      }
+
+      return item;
+    });
+
+    this.participantList.replaceChildren(...items);
+
+    for (const slot of this.participantsSection.querySelectorAll(".count-slot")) {
+      slot.textContent = participants.length.toString();
+    }
+  }
+
+  showQualitySection(visible: boolean): void {
+    this.qualitySection.classList.toggle("hidden", !visible);
+  }
+
+  private copyLink(): void {
+    const succeed = () => this.showCopyFeedback(this.copyLinkDone);
+    const fail = () => {
+      // Let the person copy it themselves
+      this.roomLink.focus();
+      this.roomLink.select();
+      this.showCopyFeedback(this.copyLinkFailed);
+    };
+
+    if (navigator.clipboard == null) {
+      fail();
+      return;
+    }
+
+    navigator.clipboard.writeText(this.roomLink.value).then(succeed, fail);
+  }
+
+  private showCopyFeedback(element: HTMLElement): void {
+    this.copyLinkDone.classList.add("hidden");
+    this.copyLinkFailed.classList.add("hidden");
+    element.classList.remove("hidden");
+
+    if (this.copyFeedbackTimer != null) {
+      window.clearTimeout(this.copyFeedbackTimer);
+    }
+
+    // The failure stays, because the person still has to copy the link
+    this.copyFeedbackTimer =
+      element === this.copyLinkDone
+        ? window.setTimeout(() => this.copyLinkDone.classList.add("hidden"), COPY_FEEDBACK_MS)
+        : null;
+  }
+
+  /**
    * Shows the quality settings in the menu
    */
   setQuality(quality: QualitySettings): void {
@@ -1223,8 +1339,11 @@ class Ui {
   /**
    * Returns the name to display for a participant.
    */
-  displayName(name: string | undefined): string {
-    return name != null && name !== "" ? name : this.anonymousName;
+  displayName(name: string | undefined, participantId: string): string {
+    // Someone without a name is a guest numbered by the order of joining, the same on every screen
+    return name != null && name !== ""
+      ? name
+      : this.anonymousName.replace("{number}", (Number(participantId) + 1).toString());
   }
 
   setVideo(stream: MediaStream | null, isLocal: boolean): void {
@@ -1273,11 +1392,9 @@ class Ui {
     presenting: boolean;
     hidden: boolean;
     switching: boolean;
-    menu: boolean;
     viewers: number;
   }): void {
     this.toolbar.classList.toggle("hidden", !options.visible);
-    this.menuButton.classList.toggle("hidden", !options.menu);
     this.presentButton.classList.toggle("hidden", !options.canPresent);
     this.stopButton.classList.toggle("hidden", !options.presenting);
     this.switchButton.classList.toggle("hidden", !options.presenting);
@@ -1398,6 +1515,8 @@ class RoomController {
     this.ui = new Ui();
     this.quality = readQuality();
     this.ui.setQuality(this.quality);
+    this.ui.showQualitySection(this.canPresent);
+    this.ui.setOwnName(this.storedName());
 
     const webSocketProtocol = window.location.protocol === "http:" ? "ws" : "wss";
     this.signaling = new SignalingConnection(`${webSocketProtocol}://${location.host}${location.pathname}`);
@@ -1426,6 +1545,7 @@ class RoomController {
     this.ui.onhide = (hidden: boolean) => this.setHidden(hidden);
     this.ui.onqualitychange = (quality: QualitySettings) => this.changeQuality(quality);
     this.ui.onvideoresize = () => this.outgoing?.refreshQuality();
+    this.ui.onnamechange = (name: string) => this.changeName(name);
 
     const roomIdWords = roomId.split(/(?=[A-Z])/);
     document.title = `${roomIdWords.join(" ")} | screensy`;
@@ -1538,6 +1658,14 @@ class RoomController {
     }
 
     const ownSeat = state.presenters.find((presenter) => presenter.participantId === selfId);
+    const self = state.participants.find((participant) => participant.id === selfId);
+
+    // The server's version of the name, which also follows a change made in the start dialog
+    if (self != null) {
+      this.ui.setOwnName(self.name);
+    }
+
+    this.showParticipants(state, selfId);
 
     if (this.outgoing != null) {
       if (this.outgoing.streamId == null) {
@@ -1789,6 +1917,33 @@ class RoomController {
       });
   }
 
+  /**
+   * Remembers the name and tells the room. While disconnected, the next "join" carries it.
+   */
+  private changeName(name: string): void {
+    writeStorage(getLocalStorage, NAME_STORAGE_KEY, name);
+
+    if (this.signaling.isOpen && this.selfId != null) {
+      this.sendMessage({ type: "setname", name });
+    }
+  }
+
+  private showParticipants(state: MessageRoomState, selfId: string): void {
+    const seats = new Map(state.presenters.map((presenter) => [presenter.participantId, presenter]));
+    const rank = (id: string) => (seats.has(id) ? 0 : id === selfId ? 1 : 2);
+    const participants = [...state.participants].sort((a, b) => rank(a.id) - rank(b.id));
+
+    this.ui.showParticipants(
+      participants.map((participant) => ({
+        id: participant.id,
+        name: participant.name,
+        you: participant.id === selfId,
+        presenting: seats.has(participant.id),
+        reconnecting: seats.get(participant.id)?.status === "reconnecting",
+      })),
+    );
+  }
+
   private changeQuality(quality: QualitySettings): void {
     this.quality = quality;
     writeQuality(quality);
@@ -1845,7 +2000,7 @@ class RoomController {
 
   private nameOf(participantId: string): string {
     const participant = this.state?.participants.find((participant) => participant.id === participantId);
-    return this.ui.displayName(participant?.name);
+    return this.ui.displayName(participant?.name, participantId);
   }
 
   /**
@@ -1930,8 +2085,6 @@ class RoomController {
       presenting: this.outgoing != null,
       hidden: this.outgoing?.hidden ?? false,
       switching: this.switchInProgress,
-      // The menu only has the quality settings so far, which matter to those who can present
-      menu: (ready && this.canPresent) || this.outgoing != null,
       viewers,
     });
   }

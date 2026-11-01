@@ -1008,6 +1008,107 @@ async function main() {
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
+  // --- Menu: link, name, participants ---
+
+  const isShown = (id) => `!document.getElementById(${JSON.stringify(id)}).classList.contains("hidden")`;
+  const PARTICIPANTS = `({
+    count: document.querySelector("#menu-participants .count-slot").textContent,
+    list: [...document.querySelectorAll("#participant-list li")].map((li) => ({
+      name: li.querySelector(".participant-name").textContent,
+      badges: [...li.querySelectorAll(".badge")].map((badge) => badge.textContent),
+    })),
+  })`;
+  let e;
+
+  await step("everyone gets the menu; without screen sharing, it has no quality section", async () => {
+    assert.ok((await b.state()).toolbar.includes("menu-button"));
+    assert.equal(await b.eval(isShown("menu-quality")), true);
+    e = await newPage(cdp, "E", {
+      initExtra: "delete navigator.mediaDevices.getDisplayMedia; delete MediaDevices.prototype.getDisplayMedia;",
+    });
+    await e.goto(`${ORIGIN}/${room}`);
+    const se = await e.waitFor("E joined", (s) => s.status === "status-waiting");
+    assert.deepEqual(se.toolbar, ["menu-button"]);
+    assert.equal(await e.eval(isShown("menu-quality")), false);
+  });
+
+  await step("the link of the room can be copied", async () => {
+    assert.equal(await b.eval(`document.getElementById("room-link").value === location.href`), true);
+    await cdp.send("Browser.grantPermissions", {
+      origin: ORIGIN,
+      browserContextId: b.browserContextId,
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    });
+    await b.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await b.click("#menu-button");
+    await b.click("#copy-link-button");
+    await waitEval(b, "copied", isShown("copy-link-done"), (shown) => shown === true);
+    assert.equal(await b.eval("navigator.clipboard.readText().then((text) => text === location.href)"), true);
+    await b.shot("16-menu-ja");
+
+    // Without the clipboard, the link is selected for copying by hand
+    await b.eval(`navigator.clipboard.writeText = () => Promise.reject(new Error("blocked"))`);
+    await b.click("#copy-link-button");
+    await waitEval(b, "copy failed", isShown("copy-link-failed"), (shown) => shown === true);
+    assert.equal(await b.eval(isShown("copy-link-done")), false);
+    assert.equal(
+      await b.eval(`(() => {
+        const input = document.getElementById("room-link");
+        return document.activeElement === input && input.selectionStart === 0 && input.selectionEnd === input.value.length;
+      })()`),
+      true,
+    );
+    await b.eval(`document.getElementById("menu").hidePopover()`);
+  });
+
+  await step("a viewer sets their name in the menu; everyone sees it, and the browser remembers it", async () => {
+    await setInput(b, "menu-name-input", "  Bobby  ");
+    await waitEval(a, "Bobby in A's list", PARTICIPANTS, (p) => p.list.some((entry) => entry.name === "Bobby"));
+    await waitEval(
+      b,
+      "the trimmed name in B's input",
+      `document.getElementById("menu-name-input").value`,
+      (v) => v === "Bobby",
+    );
+    assert.equal(await b.eval(`localStorage.getItem("screensy.name")`), "Bobby");
+
+    await b.reload();
+    await waitEval(a, "Bobby after B's reload", PARTICIPANTS, (p) => p.list.some((entry) => entry.name === "Bobby"));
+    assert.equal(await b.eval(`document.getElementById("menu-name-input").value`), "Bobby");
+    await b.click("#present-button");
+    const sb = await b.waitFor("B dialog", (s) => s.dialogOpen);
+    assert.equal(sb.nameValue, "Bobby");
+    await b.click("#present-cancel");
+  });
+
+  await step("the participant list shows who presents, who you are, and who is reconnecting", async () => {
+    await a.click("#present-button");
+    await a.waitFor("A dialog", (s) => s.dialogOpen);
+    await a.submitDialog("Alice");
+    await a.waitFor("A presenting", (s) => s.videoLocal);
+    // E has no name: a guest numbered by its participant ID
+    const guestId = await b.eval(`window.__roomState.participants.find((p) => p.name === "").id`);
+    const expected = {
+      count: "3",
+      list: [
+        { name: "Alice", badges: ["配信中"] },
+        { name: "Bobby", badges: ["あなた"] },
+        { name: `ゲスト ${Number(guestId) + 1}`, badges: [] },
+      ],
+    };
+    await waitEval(b, "B's list", PARTICIPANTS, (p) => JSON.stringify(p) === JSON.stringify(expected));
+    const sa = await waitEval(a, "A's list", PARTICIPANTS, (p) => p.list[0]?.badges.length === 2);
+    assert.deepEqual(sa.list[0], { name: "Alice", badges: ["presenting", "you"] });
+
+    await a.reload();
+    await a.waitFor("resume dialog", (s) => s.dialogOpen && s.dialogMode === "resume");
+    await waitEval(b, "Alice reconnecting", PARTICIPANTS, (p) => p.list[0]?.badges[0] === "再接続待ち");
+    await a.click("#present-cancel");
+    await waitEval(b, "Alice viewing", PARTICIPANTS, (p) => p.list.every((entry) => !entry.badges.includes("配信中")));
+    await cdp.send("Target.closeTarget", { targetId: e.targetId });
+    await waitEval(b, "two left", PARTICIPANTS, (p) => p.count === "2");
+  });
+
   console.log(results.every(Boolean) ? "all passed" : "some failed");
 }
 

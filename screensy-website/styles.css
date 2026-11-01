@@ -125,9 +125,11 @@ button[type="submit"]:hover {
   position: fixed;
   inset: 54px auto auto 10px;
   margin: 0;
-  width: min(36ch, calc(100% - 20px));
+  width: min(40ch, calc(100% - 20px));
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
   box-sizing: border-box;
-  padding: 16px 18px;
+  padding: 4px 18px 16px;
   border: 1px solid #555555;
   border-radius: 10px;
   color: white;
@@ -135,15 +137,75 @@ button[type="submit"]:hover {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
 }
 
+.menu-section {
+  padding-top: 12px;
+}
+
+.menu-section + .menu-section {
+  margin-top: 14px;
+  border-top: 1px solid #444444;
+}
+
 .menu-section h2 {
   margin: 0 0 10px;
   font-size: 1.05em;
+}
+
+.link-row {
+  display: flex;
+  gap: 8px;
+}
+
+.link-row button {
+  flex: none;
+}
+
+.menu-feedback {
+  margin: 8px 0 0;
+  color: #b8e0b8;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+#copy-link-failed {
+  color: #f0b8b8;
+}
+
+.participant-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.participant-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.participant-name {
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.8em;
+  color: #e1e1e1;
+  background-color: #444444;
 }
 
 .menu-section label {
   display: block;
   margin: 10px 0 4px;
   color: #e1e1e1;
+}
+
+.menu-section h2 label {
+  margin: 0;
+  color: inherit;
 }
 
 .menu-section input,
