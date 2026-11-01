@@ -1353,12 +1353,16 @@ async function main() {
     await a.click("#blur-button");
     await waitEval(b, "B gets the blurred size", VIDEO_EDGES, (v) => v != null && v.width === 160, 10000);
     assert.equal(await a.eval(sliderShown), true);
+    const shownStrength = `document.getElementById("blur-strength-value").value`;
     assert.equal(await a.eval(`document.getElementById("blur-strength").value`), "24", "the default strength");
+    assert.equal(await a.eval(shownStrength), "24", "the value is shown next to the slider");
 
     await setStrength(64);
     await sleep(1500);
     const strong = await b.eval(VIDEO_EDGES);
-    await setStrength(16);
+    assert.equal(await a.eval(shownStrength), "64");
+    // The minimum
+    await setStrength(4);
     const light = await waitEval(
       b,
       "a lighter blur",
@@ -1366,10 +1370,11 @@ async function main() {
       (v) => v != null && v.edges > strong.edges + 1,
       10000,
     );
-    console.log(`     strength 64: ${JSON.stringify(strong)}, strength 16: ${JSON.stringify(light)}`);
+    console.log(`     strength 64: ${JSON.stringify(strong)}, strength 4: ${JSON.stringify(light)}`);
     assert.equal(strong.width, 160);
     assert.equal(light.width, 160, "the sent size stays the same");
-    assert.equal(await a.eval(`localStorage.getItem("screensy.blur")`), "16");
+    assert.equal(await a.eval(shownStrength), "4");
+    assert.equal(await a.eval(`localStorage.getItem("screensy.blur")`), "4");
 
     await setStrength(24);
     await a.click("#unblur-button");

@@ -98,6 +98,12 @@ button[type="submit"]:hover {
   width: 120px;
 }
 
+.blur-strength output {
+  min-width: 2ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 #viewer-count {
   text-shadow: 1px 1px 3px #333333;
   font-variant-numeric: tabular-nums;

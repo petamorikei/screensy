@@ -675,9 +675,11 @@ function isBlurSupported(): boolean {
 
 /**
  * The strength of the blur: how many CSS pixels on screen, in each direction, become one pixel. The presenter chooses
- * it with a slider. 16 already hides body text; 64 leaves little more than the layout.
+ * it with a slider. The minimum is the size of a pixel of the blurred video (BLUR_OUTPUT_CSS_PX), the lightest blur
+ * that it can show, which still lets large text be read; 16 already hides body text; 64 leaves little more than the
+ * layout.
  */
-const BLUR_MIN_STRENGTH = 16;
+const BLUR_MIN_STRENGTH = 4;
 const BLUR_MAX_STRENGTH = 64;
 const BLUR_DEFAULT_STRENGTH = 24;
 const BLUR_STORAGE_KEY = "screensy.blur";
@@ -1691,6 +1693,7 @@ class Ui {
   private readonly unblurButton: HTMLButtonElement;
   private readonly blurStrengthControl: HTMLElement;
   private readonly blurStrengthInput: HTMLInputElement;
+  private readonly blurStrengthValue: HTMLOutputElement;
   private readonly frameRateSelect: HTMLSelectElement;
   private readonly resolutionSelect: HTMLSelectElement;
   private readonly bitrateInput: HTMLInputElement;
@@ -1751,6 +1754,7 @@ class Ui {
     this.unblurButton = getElement("unblur-button", HTMLButtonElement);
     this.blurStrengthControl = getElement("blur-strength-control", HTMLElement);
     this.blurStrengthInput = getElement("blur-strength", HTMLInputElement);
+    this.blurStrengthValue = getElement("blur-strength-value", HTMLOutputElement);
     this.frameRateSelect = getElement("quality-frame-rate", HTMLSelectElement);
     this.resolutionSelect = getElement("quality-resolution", HTMLSelectElement);
     this.bitrateInput = getElement("quality-bitrate", HTMLInputElement);
@@ -1798,6 +1802,7 @@ class Ui {
       const strength = Number(this.blurStrengthInput.value);
 
       if (isValidBlurStrength(strength)) {
+        this.blurStrengthValue.value = strength.toString();
         this.onblurstrength?.(strength);
       }
     });
@@ -1996,6 +2001,7 @@ class Ui {
 
   setBlurStrength(strength: number): void {
     this.blurStrengthInput.value = strength.toString();
+    this.blurStrengthValue.value = strength.toString();
   }
 
   /**
