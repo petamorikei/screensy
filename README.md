@@ -162,7 +162,20 @@ recommend using Docker.
 ## Optional: password-protect your screensy instance
 
 To password-protect your screensy instance, you can set up HTTP Basic
-Authentication.
+Authentication. We recommend it for any instance that is reachable from the
+internet:
+
+-   Anyone who knows the address of your instance can otherwise create rooms
+    on it and look for rooms in use. Room names are four random words, about
+    two million combinations, which is not enough to keep a determined person
+    out.
+-   Screensy has no passwords for single rooms. Basic Authentication protects
+    the whole instance instead: the page, and the WebSocket connection to the
+    rendezvous server. Browsers ask for the username and password once, and
+    then send them on the WebSocket connection too.
+-   It does not protect the TURN server. Its username and password
+    ("screensy") are part of the website's code, so anyone can find them and
+    relay traffic through your TURN server.
 
 1.  Choose a username and password.
 
