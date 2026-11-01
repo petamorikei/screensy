@@ -151,6 +151,10 @@ const INIT_SCRIPT = `
     constructor(...args) { super(...args); window.__pcs.push(this); }
     addTransceiver(...args) { const transceiver = super.addTransceiver(...args); transceiver.sender.__pc = this; return transceiver; }
   };
+  // How often the page reads the statistics
+  window.__getStatsCalls = 0;
+  const nativeGetStats = NativePeerConnection.prototype.getStats;
+  NativePeerConnection.prototype.getStats = function (...args) { window.__getStatsCalls++; return nativeGetStats.apply(this, args); };
   const nativeReplaceTrack = RTCRtpSender.prototype.replaceTrack;
   RTCRtpSender.prototype.replaceTrack = async function (track) {
     window.__replaced.push({ kind: track?.kind ?? null, enabled: track?.enabled ?? null });
@@ -1107,6 +1111,106 @@ async function main() {
     await waitEval(b, "Alice viewing", PARTICIPANTS, (p) => p.list.every((entry) => !entry.badges.includes("配信中")));
     await cdp.send("Target.closeTarget", { targetId: e.targetId });
     await waitEval(b, "two left", PARTICIPANTS, (p) => p.count === "2");
+  });
+
+  // --- Menu: connection statistics ---
+
+  const STATS = `({
+    empty: !document.getElementById("stats-empty").classList.contains("hidden"),
+    entries: [...document.querySelectorAll("#stats-list .stats-entry")].map((entry) => ({
+      name: entry.querySelector(".stats-name").textContent,
+      fields: Object.fromEntries(
+        [...entry.querySelectorAll("dd[data-field]")]
+          .filter((dd) => !dd.classList.contains("hidden"))
+          .map((dd) => [dd.dataset.field, dd.textContent]),
+      ),
+    })),
+  })`;
+  const openMenu = (page) => page.eval(`document.getElementById("menu").showPopover()`);
+  const closeMenu = (page) => page.eval(`document.getElementById("menu").hidePopover()`);
+  const filled = (fields) => fields.bitrate !== "—" && fields.roundTripTime !== "—" && fields.resolution !== "—";
+
+  await step("a viewer sees the statistics of the stream they receive", async () => {
+    await a.click("#present-button");
+    await a.waitFor("A dialog", (s) => s.dialogOpen);
+    await a.submitDialog("Alice");
+    await a.waitFor("A presenting", (s) => s.videoLocal);
+    await b.waitFor("B viewing", (s) => s.videoPlaying, 15000);
+    await openMenu(b);
+    const stats = await waitEval(
+      b,
+      "B's statistics",
+      STATS,
+      (s) => s.entries.length === 1 && filled(s.entries[0].fields),
+      15000,
+    );
+    const { name, fields } = stats.entries[0];
+    console.log(`     viewer: ${JSON.stringify(fields)}`);
+    assert.equal(stats.empty, false);
+    assert.equal(name, "Alice");
+    assert.equal(fields.state, "接続済み");
+    assert.equal(fields.route, "直接");
+    assert.match(fields.video, /^[A-Za-z0-9]+$/);
+    assert.equal(fields.resolution, "640×360");
+    assert.match(fields.frameRate, /^\d+ fps$/);
+    assert.match(fields.bitrate, /^[\d.]+ (k|M)bps$/);
+    assert.match(fields.roundTripTime, /^\d+ ms$/);
+    assert.match(fields.packetLoss, /^\d+\.\d%$/);
+    assert.equal(fields.audio, "—", "the capture has no audio");
+    assert.equal("limitation" in fields, false, "no limitation for a received stream");
+    await b.shot("17-stats-viewer-ja");
+  });
+
+  await step("the presenter sees the statistics per viewer, which follow the viewers", async () => {
+    await openMenu(a);
+    const stats = await waitEval(
+      a,
+      "A's statistics",
+      STATS,
+      (s) => s.entries.length === 1 && filled(s.entries[0].fields),
+      15000,
+    );
+    const { name, fields } = stats.entries[0];
+    console.log(`     presenter: ${JSON.stringify(fields)}`);
+    assert.equal(name, "Bobby");
+    assert.equal(fields.state, "Connected");
+    assert.equal(fields.route, "Direct");
+    assert.equal(fields.resolution, "640×360");
+    assert.equal(fields.audio, "—", "no audio is sent");
+    assert.ok(["Nothing", "Bandwidth", "CPU", "Other"].includes(fields.limitation), fields.limitation);
+
+    c = await newPage(cdp, "C");
+    await c.goto(`${ORIGIN}/${room}`);
+    await c.waitFor("C viewing", (s) => s.videoPlaying, 15000);
+    const two = await waitEval(a, "two viewers", STATS, (s) => s.entries.length === 2);
+    assert.ok(
+      two.entries.some((entry) => /^Guest \d+$/.test(entry.name)),
+      JSON.stringify(two.entries.map((e) => e.name)),
+    );
+    await a.shot("18-stats-presenter-en");
+    await cdp.send("Target.closeTarget", { targetId: c.targetId });
+    await waitEval(a, "one viewer again", STATS, (s) => s.entries.length === 1);
+  });
+
+  await step("the statistics are only collected while the menu is open", async () => {
+    await closeMenu(a);
+    await closeMenu(b);
+    await sleep(300);
+    const before = [await a.eval("window.__getStatsCalls"), await b.eval("window.__getStatsCalls")];
+    await sleep(2500);
+    const after = [await a.eval("window.__getStatsCalls"), await b.eval("window.__getStatsCalls")];
+    assert.deepEqual(after, before);
+    await openMenu(b);
+    await sleep(2500);
+    assert.ok((await b.eval("window.__getStatsCalls")) >= before[1] + 2, "collects again when opened");
+  });
+
+  await step("without a stream, the menu says that there are no statistics", async () => {
+    await a.click("#stop-button");
+    await b.waitFor("B waiting", (s) => s.status === "status-waiting");
+    const stats = await waitEval(b, "no statistics", STATS, (s) => s.empty && s.entries.length === 0);
+    assert.equal(stats.entries.length, 0);
+    await closeMenu(b);
   });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");

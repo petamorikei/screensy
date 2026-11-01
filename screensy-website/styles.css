@@ -231,6 +231,33 @@ button[type="submit"]:hover {
   line-height: 1.4;
 }
 
+.stats-entry + .stats-entry {
+  margin-top: 12px;
+}
+
+.stats-name {
+  margin: 0 0 6px;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 0.85em;
+}
+
+.stats dt {
+  color: #b8b8b8;
+}
+
+.stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .notices {
   position: fixed;
   bottom: 70px;

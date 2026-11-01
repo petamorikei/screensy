@@ -31,6 +31,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.
+-   The menu shows the connection statistics while it is open: the state, the
+    route (direct or through TURN), the codecs, the resolution, the frame rate,
+    the bitrate, the round trip time and the packet loss. The presenter sees
+    them per viewer, with the reason when the quality is limited.
 -   Someone without a name is shown as a numbered guest, such as "Guest 3",
     numbered by the order of joining and the same on every screen.
 -   Viewers see the state of the room: waiting for a presenter, connecting,
