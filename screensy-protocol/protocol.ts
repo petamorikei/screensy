@@ -97,6 +97,15 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
 
 // Messages from the server to the client
 
+/**
+ * A STUN or TURN server, as RTCIceServer. A TURN server comes with a temporary username and credential.
+ */
+const IceServerSchema = z.object({
+  urls: z.array(z.string()).min(1),
+  username: z.string().optional(),
+  credential: z.string().optional(),
+});
+
 const WelcomeSchema = z.object({
   type: z.literal("welcome"),
   selfId: z.string(),
@@ -106,6 +115,10 @@ const WelcomeSchema = z.object({
    * The number of people that can present at the same time
    */
   maxPresenters: z.number().int().positive(),
+  /**
+   * The STUN and TURN servers for new WebRTC connections, chosen by the server's configuration
+   */
+  iceServers: z.array(IceServerSchema),
 });
 
 const ParticipantStateSchema = z.object({
@@ -189,6 +202,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type SignalKind = z.infer<typeof SignalToServerSchema>["kind"];
+export type IceServer = z.infer<typeof IceServerSchema>;
 export type MessageJoin = z.infer<typeof JoinSchema>;
 export type MessageSignalToServer = z.infer<typeof SignalToServerSchema>;
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;

@@ -6,3 +6,6 @@
 screensy-website/screensy.js
 screensy-website/screensy.js.map
 screensy-website/screensy
+
+# Secrets for Docker Compose
+.env

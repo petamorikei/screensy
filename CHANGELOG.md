@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+-   The STUN and TURN servers can be chosen with environment variables of the
+    rendezvous server (`SCREENSY_STUN_URLS`, `SCREENSY_TURN_URLS`), for
+    example a public STUN server or the Tailscale name of a machine at home.
+    The README explains how to run screensy with Tailscale.
 -   Anyone in a room can start presenting at any time with the "Present"
     button. Up to four people can present at once, shown side by side; a
     click enlarges one of them. When the room is full of presenters, the start
@@ -63,6 +67,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+-   The TURN server no longer uses the fixed username and password
+    "screensy", which anyone could read in the website's code. The
+    rendezvous server gives every participant a temporary TURN username,
+    signed with a secret that it shares with coturn. Set
+    `SCREENSY_TURN_SECRET` in ".env" (see ".env.example").
 -   Replace the signaling protocol. The fixed broadcaster and viewer roles are
     gone. The server sends the state of the room to every participant and
     relays WebRTC messages per stream. The protocol is ready for several

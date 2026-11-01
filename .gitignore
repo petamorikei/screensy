@@ -7,3 +7,6 @@ node_modules/
 
 # Go binary
 /screensy-website/screensy
+
+# Secrets for Docker Compose
+.env

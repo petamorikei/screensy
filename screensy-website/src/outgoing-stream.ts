@@ -27,7 +27,10 @@ export interface OutgoingPeer {
  * or hiding it then only replaces or disables tracks, without a new negotiation.
  */
 export class OutgoingStream {
-  private readonly rtcConfig: RTCConfiguration;
+  /**
+   * The configuration for a new connection, which changes with every "welcome"
+   */
+  private readonly rtcConfig: () => RTCConfiguration;
   private readonly sendMessage: MessageSender;
   private readonly peers = new Map<string, OutgoingPeer>();
   private currentStreamId: string | null = null;
@@ -58,7 +61,7 @@ export class OutgoingStream {
 
   constructor(
     mediaStream: MediaStream,
-    rtcConfig: RTCConfiguration,
+    rtcConfig: () => RTCConfiguration,
     sendMessage: MessageSender,
     quality: QualitySettings,
     blurStrength: number,
@@ -435,7 +438,7 @@ export class OutgoingStream {
   }
 
   private addPeer(participantId: string, connectionId: string, streamId: string): void {
-    const link = new PeerLink(this.rtcConfig);
+    const link = new PeerLink(this.rtcConfig());
     const connection = link.connection;
     const options: RTCRtpTransceiverInit = { direction: "sendonly", streams: [this.sendStream] };
     const video = connection.addTransceiver(sentVideo(this.capture) ?? "video", options);

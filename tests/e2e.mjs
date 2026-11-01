@@ -10,7 +10,7 @@
 // keeps its default mDNS host candidates, like a real browser.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -24,6 +24,21 @@ const PROXY_PORT = 8090;
 const CDP_PORT = 9333;
 const ORIGIN = `http://localhost:${PROXY_PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// coturn for the TURN relay checks, which are skipped without it
+const TURN_PORT = 3479;
+const findTurnserver = () => {
+  for (const path of [
+    process.env.TURNSERVER,
+    "/opt/homebrew/bin/turnserver",
+    "/usr/local/bin/turnserver",
+    "/usr/bin/turnserver",
+  ]) {
+    if (path != null && existsSync(path)) return path;
+  }
+  return null;
+};
+const TURNSERVER = findTurnserver();
 
 const children = [];
 const run = (cmd, args, opts) => {
@@ -148,7 +163,11 @@ const INIT_SCRIPT = `
   window.__replaceHook = null;
   const NativePeerConnection = window.RTCPeerConnection;
   window.RTCPeerConnection = class extends NativePeerConnection {
-    constructor(...args) { super(...args); window.__pcs.push(this); }
+    // __relayOnly allows only TURN relay candidates, like two networks that cannot reach each other directly
+    constructor(config, ...rest) {
+      super(window.__relayOnly ? { ...config, iceTransportPolicy: "relay" } : config, ...rest);
+      window.__pcs.push(this);
+    }
     addTransceiver(...args) { const transceiver = super.addTransceiver(...args); transceiver.sender.__pc = this; return transceiver; }
   };
   // How often the page reads the statistics
@@ -422,7 +441,7 @@ const main = async () => {
   const website = join(mkdtempSync(join(tmpdir(), "screensy-website-")), "screensy-website");
   execFileSync("go", ["build", "-o", website, "."], { cwd: join(REPO, "screensy-website"), stdio: "inherit" });
 
-  const startRendezvous = (maxPresenters) =>
+  const startRendezvous = (maxPresenters, env = {}) =>
     run("node", ["server.ts"], {
       cwd: join(REPO, "screensy-rendezvous"),
       env: {
@@ -430,10 +449,24 @@ const main = async () => {
         SCREENSY_LEFT_GRACE_MS: "12000",
         SCREENSY_LOST_GRACE_MS: "60000",
         SCREENSY_MAX_PRESENTERS: maxPresenters,
+        ...env,
       },
     });
   // Most scenarios are about one presenter at a time; the last ones use the default of four
   let rendezvous = startRendezvous("1");
+  const restartRendezvous = async (maxPresenters, env) => {
+    rendezvous.kill();
+    const end = Date.now() + 10000;
+    while (await isPortInUse(4000)) {
+      if (Date.now() > end) throw new Error("the rendezvous server did not stop");
+      await sleep(100);
+    }
+    rendezvous = startRendezvous(maxPresenters, env);
+    while (!(await isPortInUse(4000))) {
+      if (Date.now() > end + 10000) throw new Error("the rendezvous server did not start");
+      await sleep(100);
+    }
+  };
   run(website, [], { cwd: join(REPO, "screensy-website") });
   startProxy();
   run(CHROME, [
@@ -1557,17 +1590,7 @@ const main = async () => {
     for (const page of [a, b]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
-    rendezvous.kill();
-    const end = Date.now() + 10000;
-    while (await isPortInUse(4000)) {
-      if (Date.now() > end) throw new Error("the rendezvous server did not stop");
-      await sleep(100);
-    }
-    rendezvous = startRendezvous("4");
-    while (!(await isPortInUse(4000))) {
-      if (Date.now() > end + 10000) throw new Error("the rendezvous server did not start");
-      await sleep(100);
-    }
+    await restartRendezvous("4");
   });
 
   await step("two presenters are shown side by side, to viewers and to each other", async () => {
@@ -1770,6 +1793,99 @@ const main = async () => {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
   });
+
+  // --- Different networks: only a TURN relay connects the presenter and the viewer ---
+
+  if (TURNSERVER == null) {
+    console.log("skip the TURN relay checks: turnserver not found (brew install coturn, or set TURNSERVER)");
+  } else {
+    await step("a coturn with temporary credentials starts", async () => {
+      run(TURNSERVER, [
+        "-n", // no configuration file, so that the one of a Homebrew installation does not apply
+        "--listening-ip=127.0.0.1",
+        "--relay-ip=127.0.0.1",
+        `--listening-port=${TURN_PORT}`,
+        "--min-port=49160",
+        "--max-port=49200",
+        "--use-auth-secret",
+        "--static-auth-secret=e2e-secret",
+        "--realm=screensy",
+        // Both relay addresses are on 127.0.0.1
+        "--allow-loopback-peers",
+        "--no-tls",
+        "--log-file=stdout",
+      ]);
+      // coturn listens on TCP too
+      const end = Date.now() + 10000;
+      while (!(await isPortInUse(TURN_PORT))) {
+        if (Date.now() > end) throw new Error("coturn did not start");
+        await sleep(100);
+      }
+      await restartRendezvous("4", {
+        SCREENSY_TURN_SECRET: "e2e-secret",
+        SCREENSY_TURN_URLS: `turn:127.0.0.1:${TURN_PORT}`,
+        SCREENSY_STUN_URLS: "",
+      });
+    });
+
+    // The type of the local candidate of the selected pair of every open connection
+    const RELAY_ROUTES = `(async () => {
+      const routes = [];
+      for (const pc of window.__pcs.filter((pc) => pc.connectionState === "connected")) {
+        const stats = new Map();
+        (await pc.getStats()).forEach((entry) => stats.set(entry.id, entry));
+        const transport = [...stats.values()].find((entry) => entry.type === "transport");
+        const pair = stats.get(transport?.selectedCandidatePairId);
+        routes.push(stats.get(pair?.localCandidateId)?.candidateType ?? null);
+      }
+      return routes;
+    })()`;
+    const relayPage = (label) => newPage(cdp, label, { initExtra: "window.__relayOnly = true;" });
+
+    await step("with only relay candidates, the viewer gets the stream through TURN", async () => {
+      const presenter = await relayPage("T1");
+      await presenter.goto(`${ORIGIN}/`);
+      const s = await presenter.waitFor("T1 start dialog", (s) => s.dialogOpen);
+      await presenter.submitDialog("Tess");
+      await presenter.waitFor("T1 presenting", (s) => s.videoLocal);
+      const viewer = await relayPage("T2");
+      await viewer.goto(`${ORIGIN}/${s.hash}`);
+      await viewer.waitFor("T2 video through the relay", (s) => s.videoPlaying, 20000);
+      assert.deepEqual(await viewer.eval(RELAY_ROUTES), ["relay"], "the viewer receives through the relay");
+      assert.deepEqual(await presenter.eval(RELAY_ROUTES), ["relay"], "the presenter sends through the relay");
+      for (const page of [presenter, viewer]) {
+        await cdp.send("Target.closeTarget", { targetId: page.targetId });
+      }
+    });
+
+    await step("credentials signed with another secret do not get a relay", async () => {
+      await restartRendezvous("4", {
+        SCREENSY_TURN_SECRET: "another-secret",
+        SCREENSY_TURN_URLS: `turn:127.0.0.1:${TURN_PORT}`,
+        SCREENSY_STUN_URLS: "",
+      });
+      const presenter = await relayPage("T3");
+      await presenter.goto(`${ORIGIN}/`);
+      const s = await presenter.waitFor("T3 start dialog", (s) => s.dialogOpen);
+      await presenter.submitDialog("Theo");
+      await presenter.waitFor("T3 presenting", (s) => s.videoLocal);
+      const viewer = await relayPage("T4");
+      await viewer.goto(`${ORIGIN}/${s.hash}`);
+      await viewer.waitFor("T4 joined", (s) => s.tiles.length === 1);
+      // The offer and the answer still go through the server, but ICE finds no pair
+      await sleep(8000);
+      const state = await viewer.state();
+      assert.equal(state.videoPlaying, false, "no stream without a relay");
+      assert.equal(
+        await viewer.eval(`window.__pcs.length > 0 && window.__pcs.every((pc) => pc.connectionState !== "connected")`),
+        true,
+        "the connection never connects",
+      );
+      for (const page of [presenter, viewer]) {
+        await cdp.send("Target.closeTarget", { targetId: page.targetId });
+      }
+    });
+  }
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");
 };
