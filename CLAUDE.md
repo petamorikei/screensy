@@ -16,14 +16,14 @@ The toolchain versions are pinned in `mise.toml`: Node, pnpm, Go and prek.
 
 ## Commands
 
-There is no test suite.
-
 ```sh
 mise install && pnpm install          # set up the toolchain and dependencies
 pnpm check                            # Biome format + lint with fixes (TS, JSON, CSS, Markdown, YAML; HTML is lint-only)
 pnpm lint                             # Biome without writing changes
 pnpm typecheck                        # tsc --noEmit in both packages
 pnpm --filter screensy-website build  # compile screensy.ts -> screensy.js
+pnpm test:protocol                    # protocol checks against the rendezvous server (port 4000)
+pnpm test:e2e                         # browser checks in headless Chrome (needs Go and Chrome; ports 4000, 8080, 8090, 9333)
 
 pnpm --filter screensy-rendezvous start            # ws://localhost:4000
 cd screensy-website && go run .                    # http://localhost:8080 (must run from screensy-website/, it serves ".")
@@ -34,6 +34,13 @@ docker compose up -d
 ```
 
 `--filter` matches the `name` in each package's `package.json`, not the directory name. WebRTC requires HTTPS outside `localhost`, so test a real deployment behind Caddy.
+
+### Tests
+
+The two scripts in `tests/` are plain Node ESM with no dependencies of their own. They start what they need and stop it when they finish. They are not run in CI or by the git hooks; run them after changing the protocol, the client or the translations.
+
+- `tests/protocol.mjs` starts `server.ts` with short timers (`SCREENSY_*_MS`) and checks the protocol with WebSocket clients: joining, takeover, the grace periods, resuming, socket replacement, signal relay validation, the heartbeat and room deletion. It borrows `ws` from `screensy-rendezvous`, because it needs `terminate()` and `autoPong`.
+- `tests/e2e.mjs` builds and starts the website, the rendezvous server and a proxy on port 8090 that routes like the Caddyfile, then drives headless Chrome over CDP. `getDisplayMedia` returns a canvas stream, because headless Chrome cannot accept the screen picker. Chrome keeps its default mDNS host candidates: turning them off hid a real connection bug once. The proxy can break a page's WebSocket without a close frame, for pages that set the cookie `e2e=<tag>`. `CHROME` sets the Chrome binary, `SHOTS=<dir>` saves screenshots and `DEBUG=1` prints the server output.
 
 ## Tooling conventions
 

@@ -9,6 +9,8 @@
     "lint": "biome check .",
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r build",
+    "test:protocol": "node tests/protocol.mjs",
+    "test:e2e": "pnpm --filter screensy-website build && node tests/e2e.mjs",
     "prepare": "mise exec -- prek install",
     "preinstall": "npx only-allow pnpm"
   },
