@@ -178,35 +178,6 @@
                 Nobody is presenting yet. The screen appears here when someone
                 starts.
             </p>
-            <p id="status-joining" class="hidden">
-                Connecting to <span class="name-slot"></span>'s screen…
-            </p>
-            <p id="status-switching" class="hidden">
-                Switching to <span class="name-slot"></span>'s screen…
-            </p>
-            <p id="status-presenter-left" class="hidden">
-                <span class="name-slot"></span> left the page. Waiting for them
-                to come back…<span class="countdown">
-                    (<span class="countdown-slot"></span> left)</span
-                >
-            </p>
-            <p id="status-presenter-lost" class="hidden">
-                <span class="name-slot"></span>'s connection was lost. Waiting
-                for them to reconnect…<span class="countdown">
-                    (<span class="countdown-slot"></span> left)</span
-                >
-            </p>
-            <p id="status-presenter-resuming" class="hidden">
-                <span class="name-slot"></span> is resuming the presentation…
-            </p>
-            <p id="status-presenter-hidden" class="hidden">
-                <span class="name-slot"></span> has hidden their screen for a
-                moment.
-            </p>
-            <p id="status-self-hidden" class="hidden">
-                Your screen is hidden. The viewers see this black screen too and
-                hear nothing.
-            </p>
         </div>
         <div class="notices">
             <div id="notice-taken-over" class="notice hidden" role="status">
@@ -247,6 +218,12 @@
             </div>
             <div id="notice-full" class="notice hidden" role="status">
                 <p>The room is full of presenters now. Try again.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-echo-muted" class="notice hidden" role="status">
+                <p>The other presenters are muted, so that your shared sound does not send their sound back.</p>
                 <button class="notice-close" type="button" aria-label="Close">
                     ×
                 </button>
@@ -302,9 +279,53 @@
         <span id="text-you" class="hidden">you</span>
         <span id="text-presenting" class="hidden">presenting</span>
         <span id="text-reconnecting" class="hidden">reconnecting</span>
+        <span id="text-self-tile" class="hidden">You</span>
+        <span id="text-mute" class="hidden">Mute</span>
+        <span id="text-unmute" class="hidden">Unmute</span>
+        <template id="tile-template">
+            <div class="tile">
+                <video autoplay muted playsinline></video>
+                <div class="tile-status hidden">
+                    <p data-status="status-joining" class="hidden">
+                        Connecting to <span class="name-slot"></span>'s screen…
+                    </p>
+                    <p data-status="status-presenter-left" class="hidden">
+                        <span class="name-slot"></span> left the page. Waiting for them
+                        to come back…<span class="countdown">
+                            (<span class="countdown-slot"></span> left)</span
+                        >
+                    </p>
+                    <p data-status="status-presenter-lost" class="hidden">
+                        <span class="name-slot"></span>'s connection was lost. Waiting
+                        for them to reconnect…<span class="countdown">
+                            (<span class="countdown-slot"></span> left)</span
+                        >
+                    </p>
+                    <p data-status="status-presenter-resuming" class="hidden">
+                        <span class="name-slot"></span> is resuming the presentation…
+                    </p>
+                    <p data-status="status-presenter-hidden" class="hidden">
+                        <span class="name-slot"></span> has hidden their screen for a
+                        moment.
+                    </p>
+                    <p data-status="status-self-hidden" class="hidden">
+                        Your screen is hidden. The viewers see this black screen too and
+                        hear nothing.
+                    </p>
+                </div>
+                <div class="tile-bar">
+                    <span class="tile-name"></span>
+                    <button class="tile-mute" type="button" aria-label="Mute">🔊</button>
+                    <button class="tile-fullscreen" type="button" aria-label="Full screen">⛶</button>
+                </div>
+            </div>
+        </template>
         <template id="stats-template">
             <div class="stats-entry">
-                <p class="stats-name"></p>
+                <p class="stats-heading">
+                    <span class="stats-name"></span> ·
+                    <span class="stats-direction"></span>
+                </p>
                 <dl class="stats">
                     <dt>State</dt>
                     <dd data-field="state"></dd>
@@ -342,21 +363,9 @@
             <span data-limitation="bandwidth">Bandwidth</span>
             <span data-limitation="cpu">CPU</span>
             <span data-limitation="other">Other</span>
+            <span data-direction="send">sending</span>
+            <span data-direction="receive">receiving</span>
         </div>
-        <video
-            id="stream"
-            autoplay="autoplay"
-            muted="muted"
-            controls="controls"
-            playsinline="playsinline"
-        >
-            <div class="popup">
-                <h1>Video tags are not supported.</h1>
-                <p>
-                    Screensy needs video tag support, but your browser does not
-                    provide it. Use a browser that supports video tags.
-                </p>
-            </div>
-        </video>
+        <div id="stage" class="stage" data-count="0"></div>
     </body>
 </html>

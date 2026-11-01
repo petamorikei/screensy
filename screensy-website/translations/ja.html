@@ -172,33 +172,6 @@
             <p id="status-waiting" class="hidden">
                 まだ誰も配信していません。配信が始まると、ここに画面が表示されます。
             </p>
-            <p id="status-joining" class="hidden">
-                <span class="name-slot"></span>さんの画面に接続しています…
-            </p>
-            <p id="status-switching" class="hidden">
-                <span class="name-slot"></span>さんの画面に切り替えています…
-            </p>
-            <p id="status-presenter-left" class="hidden">
-                <span class="name-slot"></span>さんがページを離れました。戻ってくるのを待っています…<span
-                    class="countdown"
-                    >（あと <span class="countdown-slot"></span>）</span
-                >
-            </p>
-            <p id="status-presenter-lost" class="hidden">
-                <span class="name-slot"></span>さんの接続が切れました。再接続を待っています…<span
-                    class="countdown"
-                    >（あと <span class="countdown-slot"></span>）</span
-                >
-            </p>
-            <p id="status-presenter-resuming" class="hidden">
-                <span class="name-slot"></span>さんが配信を再開しようとしています…
-            </p>
-            <p id="status-presenter-hidden" class="hidden">
-                <span class="name-slot"></span>さんが画面を一時的に隠しています。
-            </p>
-            <p id="status-self-hidden" class="hidden">
-                画面を隠しています。視聴者にもこの黒い画面が表示され、音声も届きません。
-            </p>
         </div>
         <div class="notices">
             <div id="notice-taken-over" class="notice hidden" role="status">
@@ -235,6 +208,12 @@
             </div>
             <div id="notice-full" class="notice hidden" role="status">
                 <p>配信できる人数がいっぱいになりました。もう一度お試しください。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-echo-muted" class="notice hidden" role="status">
+                <p>音声が回り込まないよう、ほかの配信者の音声を消音しました。</p>
                 <button class="notice-close" type="button" aria-label="閉じる">
                     ×
                 </button>
@@ -287,9 +266,51 @@
         <span id="text-you" class="hidden">あなた</span>
         <span id="text-presenting" class="hidden">配信中</span>
         <span id="text-reconnecting" class="hidden">再接続待ち</span>
+        <span id="text-self-tile" class="hidden">あなた</span>
+        <span id="text-mute" class="hidden">消音</span>
+        <span id="text-unmute" class="hidden">消音を解除</span>
+        <template id="tile-template">
+            <div class="tile">
+                <video autoplay muted playsinline></video>
+                <div class="tile-status hidden">
+                    <p data-status="status-joining" class="hidden">
+                        <span class="name-slot"></span>さんの画面に接続しています…
+                    </p>
+                    <p data-status="status-presenter-left" class="hidden">
+                        <span class="name-slot"></span>さんがページを離れました。戻ってくるのを待っています…<span
+                            class="countdown"
+                            >（あと <span class="countdown-slot"></span>）</span
+                        >
+                    </p>
+                    <p data-status="status-presenter-lost" class="hidden">
+                        <span class="name-slot"></span>さんの接続が切れました。再接続を待っています…<span
+                            class="countdown"
+                            >（あと <span class="countdown-slot"></span>）</span
+                        >
+                    </p>
+                    <p data-status="status-presenter-resuming" class="hidden">
+                        <span class="name-slot"></span>さんが配信を再開しようとしています…
+                    </p>
+                    <p data-status="status-presenter-hidden" class="hidden">
+                        <span class="name-slot"></span>さんが画面を一時的に隠しています。
+                    </p>
+                    <p data-status="status-self-hidden" class="hidden">
+                        画面を隠しています。視聴者にもこの黒い画面が表示され、音声も届きません。
+                    </p>
+                </div>
+                <div class="tile-bar">
+                    <span class="tile-name"></span>
+                    <button class="tile-mute" type="button" aria-label="消音">🔊</button>
+                    <button class="tile-fullscreen" type="button" aria-label="全画面表示">⛶</button>
+                </div>
+            </div>
+        </template>
         <template id="stats-template">
             <div class="stats-entry">
-                <p class="stats-name"></p>
+                <p class="stats-heading">
+                    <span class="stats-name"></span> ·
+                    <span class="stats-direction"></span>
+                </p>
                 <dl class="stats">
                     <dt>状態</dt>
                     <dd data-field="state"></dd>
@@ -327,21 +348,9 @@
             <span data-limitation="bandwidth">回線</span>
             <span data-limitation="cpu">CPU</span>
             <span data-limitation="other">その他</span>
+            <span data-direction="send">送信</span>
+            <span data-direction="receive">受信</span>
         </div>
-        <video
-            id="stream"
-            autoplay="autoplay"
-            muted="muted"
-            controls="controls"
-            playsinline="playsinline"
-        >
-            <div class="popup">
-                <h1>VideoTagが対応していません</h1>
-                <p>
-                    ScreensyはVideoTagが必要ですが、お使いのブラウザではVideoTagがサポートされていません。<br />
-                    VideoTagが対応していることをご確認下さい。
-                </p>
-            </div>
-        </video>
+        <div id="stage" class="stage" data-count="0"></div>
     </body>
 </html>

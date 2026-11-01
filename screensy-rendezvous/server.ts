@@ -32,7 +32,7 @@ const PING_INTERVAL_MS = numberFromEnv("SCREENSY_PING_INTERVAL_MS", 15_000);
  * The number of people that can present at the same time. In a full room, a new presenter has to name the presenter
  * to take over.
  */
-const MAX_PRESENTERS = 1;
+const MAX_PRESENTERS = numberFromEnv("SCREENSY_MAX_PRESENTERS", 4);
 
 const MAX_NAME_LENGTH = 32;
 const MAX_ROOM_ID_LENGTH = 256;
@@ -107,6 +107,10 @@ interface MessageWelcome {
   selfId: string;
   connectionId: string;
   resumeToken: string;
+  /**
+   * MAX_PRESENTERS, so that the client knows when the room is full
+   */
+  maxPresenters: number;
 }
 
 interface ParticipantState {
@@ -322,6 +326,7 @@ class Room {
       selfId: participant.id,
       connectionId: participant.connectionId,
       resumeToken: participant.resumeToken,
+      maxPresenters: MAX_PRESENTERS,
     });
 
     this.broadcastState();

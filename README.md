@@ -224,6 +224,13 @@ internet:
     }
     ```
 
+## Bandwidth
+
+The video goes from each presenter to each viewer directly. Each presenter
+uploads one stream per participant, and each participant downloads one stream
+per presenter: with four presenters, a viewer receives four streams. Lower the
+bitrate or the resolution in the menu when the connections are slow.
+
 ## Ports
 
 The following ports need to be accessible by the client for screensy to work:
