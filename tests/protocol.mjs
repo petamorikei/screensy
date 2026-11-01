@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
 
 // The clients use the ws package of the rendezvous server: they need terminate() and autoPong, which the built-in
@@ -17,6 +18,20 @@ const GRACE_MS = 1500; // the "left" grace period
 const LOST_GRACE_MS = 4000;
 const PING_MS = 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Another server on the port would get the checks instead, with other timers
+const portInUse = await new Promise((resolve) => {
+  const probe = net.connect(4000, "localhost");
+  probe.on("connect", () => {
+    probe.destroy();
+    resolve(true);
+  });
+  probe.on("error", () => resolve(false));
+});
+if (portInUse) {
+  console.error("Port 4000 is in use. Stop the server that uses it and try again.");
+  process.exit(1);
+}
 
 const server = spawn("node", ["server.ts"], {
   cwd: fileURLToPath(new URL("../screensy-rendezvous", import.meta.url)),

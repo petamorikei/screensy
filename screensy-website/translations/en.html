@@ -65,6 +65,15 @@
             <button id="present-button" class="hidden" type="button">
                 Present
             </button>
+            <button id="switch-button" class="hidden" type="button">
+                Switch screen
+            </button>
+            <button id="hide-button" class="hidden" type="button">
+                Hide screen
+            </button>
+            <button id="show-button" class="hidden" type="button">
+                Show screen
+            </button>
             <button id="stop-button" class="hidden" type="button">
                 Stop presenting
             </button>
@@ -102,6 +111,14 @@
             <p id="status-presenter-resuming" class="hidden">
                 <span class="name-slot"></span> is resuming the presentation…
             </p>
+            <p id="status-presenter-hidden" class="hidden">
+                <span class="name-slot"></span> has hidden their screen for a
+                moment.
+            </p>
+            <p id="status-self-hidden" class="hidden">
+                Your screen is hidden. The viewers see this black screen too and
+                hear nothing.
+            </p>
         </div>
         <div class="notices">
             <div id="notice-taken-over" class="notice hidden" role="status">
@@ -121,6 +138,15 @@
             </div>
             <div id="notice-connection-lost" class="notice hidden" role="status">
                 <p>Presenting stopped because the connection was lost.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-switch-failed" class="notice hidden" role="status">
+                <p>
+                    Could not switch to that screen. Your current screen is still
+                    being presented.
+                </p>
                 <button class="notice-close" type="button" aria-label="Close">
                     ×
                 </button>

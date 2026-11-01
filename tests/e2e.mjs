@@ -129,25 +129,92 @@ class Cdp {
 const INIT_SCRIPT = `
 (() => {
   window.__sockets = [];
+  window.__roomState = null;
   const NativeWebSocket = window.WebSocket;
   window.WebSocket = class extends NativeWebSocket {
-    constructor(...args) { super(...args); window.__sockets.push(this); }
+    constructor(...args) {
+      super(...args);
+      window.__sockets.push(this);
+      this.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === "roomstate") window.__roomState = message;
+      });
+    }
   };
+
+  // Every connection, and every track passed to replaceTrack. __replaceHook(sender, track) can delay or fail it.
+  window.__pcs = [];
+  window.__replaced = [];
+  window.__replaceHook = null;
+  const NativePeerConnection = window.RTCPeerConnection;
+  window.RTCPeerConnection = class extends NativePeerConnection {
+    constructor(...args) { super(...args); window.__pcs.push(this); }
+    addTransceiver(...args) { const transceiver = super.addTransceiver(...args); transceiver.sender.__pc = this; return transceiver; }
+  };
+  const nativeReplaceTrack = RTCRtpSender.prototype.replaceTrack;
+  RTCRtpSender.prototype.replaceTrack = async function (track) {
+    window.__replaced.push({ kind: track?.kind ?? null, enabled: track?.enabled ?? null });
+    if (window.__replaceHook) await window.__replaceHook(this, track);
+    return nativeReplaceTrack.call(this, track);
+  };
+
+  // Headless Chrome cannot accept the screen picker. __nextCapture sets the size, a fixed color and audio of the next
+  // capture; by default it is 640x360 with changing colors and no audio.
   window.__captures = [];
+  window.__nextCapture = null;
   navigator.mediaDevices.getDisplayMedia = async () => {
     if (window.__denyCapture) throw new DOMException("denied", "NotAllowedError");
+    const options = window.__nextCapture ?? {};
+    window.__nextCapture = null;
+    const width = options.width ?? 640;
+    const height = options.height ?? 360;
     const canvas = document.createElement("canvas");
-    canvas.width = 640;
-    canvas.height = 360;
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext("2d");
     let i = 0;
-    setInterval(() => { context.fillStyle = "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, 640, 360); }, 50);
+    setInterval(() => { context.fillStyle = options.color ?? "hsl(" + ((i++ * 15) % 360) + " 80% 50%)"; context.fillRect(0, 0, width, height); }, 50);
     const stream = canvas.captureStream(20);
+    if (options.audio) {
+      const audioContext = new AudioContext();
+      const oscillator = audioContext.createOscillator();
+      const destination = audioContext.createMediaStreamDestination();
+      oscillator.connect(destination);
+      oscillator.start();
+      stream.addTrack(destination.stream.getAudioTracks()[0]);
+    }
     window.__captures.push(stream);
     return stream;
   };
 })();
 `;
+
+// The average color and the size of what the page's <video> shows, or null if it shows nothing
+const VIDEO_COLOR = `(() => {
+  const video = document.getElementById("stream");
+  if (video.videoWidth === 0) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 18;
+  const context = canvas.getContext("2d");
+  context.drawImage(video, 0, 0, 32, 18);
+  const data = context.getImageData(0, 0, 32, 18).data;
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+  const n = data.length / 4;
+  return { r: r / n, g: g / n, b: b / n, width: video.videoWidth, height: video.videoHeight };
+})()`;
+
+async function waitColor(page, desc, predicate, timeout = 10000) {
+  const end = Date.now() + timeout;
+  let last;
+  while (Date.now() < end) {
+    last = await page.eval(VIDEO_COLOR);
+    if (predicate(last)) return last;
+    await sleep(200);
+  }
+  throw new Error(`${page.label}: timeout waiting for ${desc}\nlast color: ${JSON.stringify(last)}`);
+}
 
 const PAGE_STATE = `(() => {
   const visible = (sel) => [...document.querySelectorAll(sel)].filter((e) => !e.classList.contains("hidden") && !e.closest(".hidden")).map((e) => e.id);
@@ -285,7 +352,27 @@ async function step(name, fn) {
   }
 }
 
+function isPortInUse(port) {
+  return new Promise((resolve) => {
+    const probe = net.connect(port, "localhost");
+    probe.on("connect", () => {
+      probe.destroy();
+      resolve(true);
+    });
+    probe.on("error", () => resolve(false));
+  });
+}
+
 async function main() {
+  // Other servers on these ports would get the checks instead, with other timers
+  const busy = [];
+  for (const port of [4000, 8080, PROXY_PORT, CDP_PORT]) {
+    if (await isPortInUse(port)) busy.push(port);
+  }
+  if (busy.length > 0) {
+    throw new Error(`Ports in use: ${busy.join(", ")}. Stop the servers that use them and try again.`);
+  }
+
   // Build the website first: "go run" would start it as a child process that cleanup() could not kill
   const website = join(mkdtempSync(join(tmpdir(), "screensy-website-")), "screensy-website");
   execFileSync("go", ["build", "-o", website, "."], { cwd: join(REPO, "screensy-website"), stdio: "inherit" });
@@ -577,6 +664,185 @@ async function main() {
       await b.waitFor("B viewing A again", (s) => s.videoPlaying, 15000);
     },
   );
+
+  // --- Switching and hiding the screen ---
+
+  const isRed = (c) => c != null && c.r > 180 && c.g < 80 && c.b < 80;
+  const isBlue = (c) => c != null && c.b > 180 && c.r < 80 && c.g < 80;
+  const isGreen = (c) => c != null && c.g > 100 && c.r < 80 && c.b < 80;
+  const isYellow = (c) => c != null && c.r > 180 && c.g > 180 && c.b < 80;
+  const isBlack = (c) => c != null && c.r < 20 && c.g < 20 && c.b < 20;
+  const openSenders = (kind) =>
+    `window.__pcs.filter((pc) => pc.connectionState !== "closed").flatMap((pc) => pc.getSenders()).filter((s) => s.track?.kind === ${JSON.stringify(kind)})`;
+  const switchTo = async (page, capture) => {
+    await page.eval(`window.__nextCapture = ${JSON.stringify(capture)}`);
+    await page.click("#switch-button");
+  };
+  let c;
+  let d;
+
+  await step("switching the screen keeps the connections and the stream", async () => {
+    const pcs = await b.eval("window.__pcs.length");
+    const streamId = await b.eval("window.__roomState.presenters[0].streamId");
+    const oldTrack = await a.eval("window.__captures.length - 1");
+    await switchTo(a, { width: 800, height: 600, color: "rgb(255, 0, 0)" });
+    await waitColor(b, "B sees the red 800x600 screen", (c) => isRed(c) && c.width === 800 && c.height === 600);
+    assert.equal(await b.eval("window.__pcs.length"), pcs, "no new connection on the viewer");
+    assert.equal(await b.eval("window.__roomState.presenters[0].streamId"), streamId);
+    assert.equal(await a.eval(`window.__captures[${oldTrack}].getVideoTracks()[0].readyState`), "ended");
+    const sa = await a.waitFor("A shows the new capture", (s) => s.videoLocal && s.captureLive);
+    assert.ok(sa.toolbar.includes("switch-button"));
+  });
+
+  await step("a cancelled switch keeps the current screen", async () => {
+    await a.eval("window.__denyCapture = true");
+    await a.click("#switch-button");
+    await sleep(500);
+    await a.eval("window.__denyCapture = false");
+    const sa = await a.state();
+    assert.ok(sa.videoLocal && sa.captureLive);
+    assert.equal(sa.notices.length, 0);
+    assert.equal(await a.eval(`document.getElementById("switch-button").disabled`), false);
+    await waitColor(b, "B still sees red", isRed);
+  });
+
+  await step("hiding the screen: black and silent for the viewers and in the presenter's preview", async () => {
+    await a.click("#hide-button");
+    const sb = await b.waitFor("B sees hidden", (s) => s.status === "status-presenter-hidden");
+    assert.equal(sb.statusText, "Aliceさんが画面を一時的に隠しています。");
+    await waitColor(b, "B sees black", isBlack);
+    const sa = await a.waitFor("A sees self hidden", (s) => s.status === "status-self-hidden");
+    assert.ok(sa.toolbar.includes("show-button") && !sa.toolbar.includes("hide-button"));
+    await waitColor(a, "A's preview is black too", isBlack);
+    assert.equal(await a.eval(`${openSenders("video")}.every((s) => !s.track.enabled)`), true);
+    await b.shot("13-presenter-hidden-ja");
+    await a.shot("14-self-hidden-en");
+
+    c = await newPage(cdp, "C");
+    await c.goto(`${ORIGIN}/${room}`);
+    const sc = await c.waitFor("C, joining later, sees hidden", (s) => s.status === "status-presenter-hidden", 15000);
+    assert.match(sc.statusText, /^Alice has hidden their screen/);
+  });
+
+  await step("switching while hidden never sends the new screen or audio", async () => {
+    await a.eval("window.__replaced = []");
+    await switchTo(a, { width: 640, height: 480, color: "rgb(0, 0, 255)", audio: true });
+    await a.waitFor("A shows the blue capture", (s) => s.videoLocal && s.captureLive);
+    await waitColor(a, "A's preview of the new capture is black", isBlack);
+    const replaced = await a.eval("window.__replaced.filter((r) => r.kind != null)");
+    assert.equal(replaced.length, 4, "video and audio for B and C");
+    assert.ok(
+      replaced.every((r) => r.enabled === false),
+      JSON.stringify(replaced),
+    );
+    await sleep(1000);
+    await waitColor(b, "B still sees black", isBlack);
+    assert.equal((await b.state()).status, "status-presenter-hidden");
+    assert.equal(await a.eval(`${openSenders("audio")}.every((s) => !s.track.enabled)`), true);
+  });
+
+  await step("showing the screen again, now with audio that the first screen did not have", async () => {
+    await a.click("#show-button");
+    await waitColor(b, "B sees blue", (c) => isBlue(c) && c.width === 640 && c.height === 480);
+    await waitColor(c, "C sees blue", isBlue);
+    await b.waitFor("B status cleared", (s) => s.status == null);
+    await a.waitFor("A status cleared", (s) => s.status == null && s.toolbar.includes("hide-button"));
+    const end = Date.now() + 10000;
+    while (!(await b.eval(`document.getElementById("stream").srcObject?.getAudioTracks()[0]?.muted === false`))) {
+      if (Date.now() > end) throw new Error("B gets no audio");
+      await sleep(200);
+    }
+    // The audio senders had no track before the switch, and now get their bitrate limit
+    assert.equal(
+      await a.eval(`${openSenders("audio")}.every((s) => s.getParameters().encodings[0]?.maxBitrate === 960000)`),
+      true,
+    );
+  });
+
+  await step("a hidden screen stays hidden after an automatic resume", async () => {
+    await a.click("#hide-button");
+    await b.waitFor("B sees hidden", (s) => s.status === "status-presenter-hidden");
+    const streamId = await b.eval("window.__roomState.presenters[0].streamId");
+    await a.eval("window.__sockets.at(-1).close()");
+    const end = Date.now() + 20000;
+    while (
+      !(await b.eval(
+        `window.__roomState.presenters[0]?.streamId !== ${JSON.stringify(streamId)} && window.__roomState.presenters[0]?.status === "live" && window.__roomState.presenters[0]?.hidden === true`,
+      ))
+    ) {
+      if (Date.now() > end) throw new Error("the resumed stream is not hidden");
+      await sleep(200);
+    }
+    await b.waitFor("B sees hidden again", (s) => s.status === "status-presenter-hidden", 15000);
+    await waitColor(b, "B sees black", isBlack, 15000);
+    await a.waitFor("A still hidden", (s) => s.status === "status-self-hidden" && s.captureLive);
+    await a.click("#show-button");
+    await waitColor(b, "B sees blue again", isBlue);
+  });
+
+  await step("a switch that one connection rejects goes back to the current screen everywhere", async () => {
+    await a.eval(`(() => {
+      const open = window.__pcs.filter((pc) => pc.connectionState !== "closed");
+      const victim = open.at(-1);
+      window.__replaceHook = async (sender, track) => {
+        if (sender.__pc === victim && track != null && track !== sender.track) throw new Error("injected failure");
+      };
+    })()`);
+    await switchTo(a, { width: 1024, height: 576, color: "rgb(0, 160, 0)" });
+    const sa = await a.waitFor("A notified", (s) => s.notices.includes("notice-switch-failed"));
+    assert.match(sa.noticeText.join(" "), /Could not switch to that screen/);
+    await a.eval("window.__replaceHook = null");
+    assert.equal(
+      await a.eval("window.__captures.at(-1).getVideoTracks()[0].readyState"),
+      "ended",
+      "new capture stopped",
+    );
+    assert.equal(await a.eval(`${openSenders("video")}.every((s) => s.track.readyState === "live")`), true);
+    await waitColor(a, "A's preview stays blue", isBlue);
+    await sleep(1000);
+    for (const viewer of [b, c]) {
+      const color = await viewer.eval(VIDEO_COLOR);
+      assert.ok(isBlue(color) && !isGreen(color), `${viewer.label}: ${JSON.stringify(color)}`);
+    }
+    // Forget the rejected capture, so that the page state looks at the current one again
+    await a.eval("window.__captures.pop()");
+    await a.click("#notice-switch-failed .notice-close");
+  });
+
+  await step("a viewer who joins during a switch gets the new screen", async () => {
+    await a.eval(`(() => {
+      window.__gate = new Promise((resolve) => (window.__openGate = resolve));
+      window.__replaceHook = () => window.__gate;
+    })()`);
+    const pcs = await a.eval("window.__pcs.length");
+    await switchTo(a, { width: 1280, height: 720, color: "rgb(255, 255, 0)" });
+    assert.equal(await a.eval(`document.getElementById("switch-button").disabled`), true);
+    d = await newPage(cdp, "D");
+    await d.goto(`${ORIGIN}/${room}`);
+    const end = Date.now() + 15000;
+    while ((await a.eval("window.__pcs.length")) <= pcs) {
+      if (Date.now() > end) throw new Error("A did not open a connection to D");
+      await sleep(100);
+    }
+    await a.eval("window.__openGate(); window.__replaceHook = null");
+    for (const viewer of [b, c]) {
+      await waitColor(viewer, `${viewer.label} sees yellow`, (c) => isYellow(c) && c.width === 1280, 15000);
+    }
+    // D's connection is new, so it may still be ramping up its resolution
+    await waitColor(d, "D sees yellow", isYellow, 15000);
+    assert.equal(await a.eval(`${openSenders("video")}.length`), 3, "one video sender per viewer");
+    await a.waitFor("switch button enabled", (s) => s.toolbar.includes("switch-button"));
+    assert.equal(await a.eval(`document.getElementById("switch-button").disabled`), false);
+  });
+
+  await step("'Stop sharing' on a switched screen stops presenting", async () => {
+    await a.eval(`window.__captures.at(-1).getVideoTracks()[0].dispatchEvent(new Event("ended"))`);
+    await a.waitFor("A stopped", (s) => !s.toolbar.includes("stop-button") && s.toolbar.includes("present-button"));
+    await b.waitFor("B waiting", (s) => s.status === "status-waiting");
+    for (const page of [c, d]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+  });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");
 }
