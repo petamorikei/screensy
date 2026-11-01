@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     automatically when it comes back.
 -   The rendezvous server pings its clients, so that it notices dead
     connections, and limits the size of incoming messages to 64 KiB.
+-   Add test scripts for developers: `pnpm test:protocol` checks the
+    signaling protocol against the rendezvous server, and `pnpm test:e2e`
+    checks the website in headless Chrome.
 
 ### Changed
 
