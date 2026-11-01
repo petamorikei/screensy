@@ -10,8 +10,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 ### Added
 
 -   Anyone in a room can start presenting at any time with the "Present"
-    button. When the room is full of presenters, the start dialog asks whom to
-    take over from. The room no longer closes when the presenter leaves.
+    button. Up to four people can present at once, shown side by side; a
+    click enlarges one of them. When the room is full of presenters, the start
+    dialog asks whom to take over from. The room no longer closes when the presenter leaves.
 -   Presenters enter a display name, which the browser remembers for the next
     time. Status messages and notices show the presenter's name, for example
     when someone takes over.
@@ -31,6 +32,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     bitrate, and the priority when the connection is slow (resolution,
     frame rate or a balance). The browser remembers them, and changes apply
     at once.
+-   Each presentation has its own mute and full-screen buttons. While a
+    presenter shares sound that may contain the other presenters' sound, they
+    are muted on that presenter's page, so that it does not echo.
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.

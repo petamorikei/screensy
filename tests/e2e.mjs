@@ -163,7 +163,8 @@ const INIT_SCRIPT = `
   };
 
   // Headless Chrome cannot accept the screen picker. __nextCapture sets the size, a fixed color and audio of the next
-  // capture, and its frame rate; by default it is 640x360 at 20 fps, with changing colors and no audio.
+  // capture, its frame rate and the surface it reports; by default it is 640x360 at 20 fps, with changing colors and
+// no audio.
   window.__captures = [];
   window.__nextCapture = null;
   navigator.mediaDevices.getDisplayMedia = async (displayOptions) => {
@@ -203,6 +204,11 @@ const INIT_SCRIPT = `
       oscillator.start();
       stream.addTrack(destination.stream.getAudioTracks()[0]);
     }
+    if (options.surface) {
+      const video = stream.getVideoTracks()[0];
+      const getSettings = video.getSettings.bind(video);
+      video.getSettings = () => ({ ...getSettings(), displaySurface: options.surface });
+    }
     window.__captures.push(stream);
     return stream;
   };
@@ -211,7 +217,7 @@ const INIT_SCRIPT = `
 
 // The average color and the size of what the page's <video> shows, or null if it shows nothing
 const VIDEO_COLOR = `(() => {
-  const video = document.getElementById("stream");
+  const video = document.querySelector("#stage video");
   if (video.videoWidth === 0) return null;
   const canvas = document.createElement("canvas");
   canvas.width = 32;
@@ -238,12 +244,24 @@ async function waitColor(page, desc, predicate, timeout = 10000) {
 
 const PAGE_STATE = `(() => {
   const visible = (sel) => [...document.querySelectorAll(sel)].filter((e) => !e.classList.contains("hidden") && !e.closest(".hidden")).map((e) => e.id);
-  const video = document.getElementById("stream");
-  const src = video.srcObject;
   const capture = window.__captures.at(-1);
+  const selfVideo = document.querySelector("#stage .tile[data-self] video");
+  const remoteVideos = [...document.querySelectorAll("#stage .tile:not([data-self]) video")];
+  // The status of the whole page, or else that of the first tile that shows one
+  const pageStatus = document.getElementById("status").classList.contains("hidden") ? null : document.querySelector("#status > p:not(.hidden)");
+  const tileStatus = document.querySelector("#stage .tile-status:not(.hidden) [data-status]:not(.hidden)");
+  const shownStatus = pageStatus ?? tileStatus;
   return {
-    status: document.getElementById("status").classList.contains("hidden") ? null : visible("#status > p")[0] ?? null,
-    statusText: document.querySelector("#status > p:not(.hidden)")?.textContent.trim().replace(/\\s+/g, " ") ?? null,
+    status: pageStatus?.id ?? tileStatus?.dataset.status ?? null,
+    statusText: shownStatus?.textContent.trim().replace(/\\s+/g, " ") ?? null,
+    tiles: [...document.querySelectorAll("#stage .tile")].map((tile) => ({
+      name: tile.querySelector(".tile-name").textContent,
+      self: tile.hasAttribute("data-self"),
+      status: tile.querySelector(".tile-status:not(.hidden) [data-status]:not(.hidden)")?.dataset.status ?? null,
+      playing: tile.querySelector("video").videoWidth > 0 && !tile.querySelector("video").paused,
+      muted: tile.querySelector("video").muted,
+      spotlighted: tile.classList.contains("spotlighted"),
+    })),
     notices: visible(".notice"),
     noticeText: [...document.querySelectorAll(".notice:not(.hidden) p")].map((p) => p.textContent.trim().replace(/\\s+/g, " ")),
     dialogOpen: document.getElementById("present-dialog").open,
@@ -253,8 +271,8 @@ const PAGE_STATE = `(() => {
     nameValue: document.getElementById("present-name").value,
     toolbar: visible("#toolbar button, #viewer-count"),
     viewers: document.getElementById("viewer-count-value").textContent,
-    videoLocal: capture != null && src === capture,
-    videoPlaying: src != null && src !== capture && video.videoWidth > 0 && !video.paused,
+    videoLocal: capture != null && selfVideo?.srcObject === capture,
+    videoPlaying: remoteVideos.some((video) => video.srcObject != null && video.videoWidth > 0 && !video.paused),
     captureLive: capture != null && capture.getVideoTracks()[0].readyState === "live",
     hash: location.hash,
     lang: document.documentElement.lang,
@@ -398,10 +416,18 @@ async function main() {
   const website = join(mkdtempSync(join(tmpdir(), "screensy-website-")), "screensy-website");
   execFileSync("go", ["build", "-o", website, "."], { cwd: join(REPO, "screensy-website"), stdio: "inherit" });
 
-  run("node", ["server.ts"], {
-    cwd: join(REPO, "screensy-rendezvous"),
-    env: { ...process.env, SCREENSY_LEFT_GRACE_MS: "12000", SCREENSY_LOST_GRACE_MS: "60000" },
-  });
+  const startRendezvous = (maxPresenters) =>
+    run("node", ["server.ts"], {
+      cwd: join(REPO, "screensy-rendezvous"),
+      env: {
+        ...process.env,
+        SCREENSY_LEFT_GRACE_MS: "12000",
+        SCREENSY_LOST_GRACE_MS: "60000",
+        SCREENSY_MAX_PRESENTERS: maxPresenters,
+      },
+    });
+  // Most scenarios are about one presenter at a time; the last ones use the default of four
+  let rendezvous = startRendezvous("1");
   run(website, [], { cwd: join(REPO, "screensy-website") });
   startProxy();
   run(CHROME, [
@@ -769,7 +795,7 @@ async function main() {
     await b.waitFor("B status cleared", (s) => s.status == null);
     await a.waitFor("A status cleared", (s) => s.status == null && s.toolbar.includes("hide-button"));
     const end = Date.now() + 10000;
-    while (!(await b.eval(`document.getElementById("stream").srcObject?.getAudioTracks()[0]?.muted === false`))) {
+    while (!(await b.eval(`document.querySelector("#stage video").srcObject?.getAudioTracks()[0]?.muted === false`))) {
       if (Date.now() > end) throw new Error("B gets no audio");
       await sleep(200);
     }
@@ -1233,7 +1259,7 @@ async function main() {
   // The average difference between horizontal neighbors, drawn at 320x180: about 30 for the checkerboard, near 0 when
   // blurred
   const VIDEO_EDGES = `(() => {
-    const video = document.getElementById("stream");
+    const video = document.querySelector("#stage video");
     if (video.videoWidth === 0) return null;
     const canvas = document.createElement("canvas");
     canvas.width = 320;
@@ -1397,6 +1423,283 @@ async function main() {
     await cdp.send("Target.closeTarget", { targetId: g.targetId });
     await a.click("#stop-button");
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
+  });
+
+  // --- Several presenters: the rendezvous server restarts with its default limit of four ---
+
+  const inTile = (name, expression) =>
+    `(() => {
+      const tile = [...document.querySelectorAll("#stage .tile")].find((t) => t.querySelector(".tile-name").textContent === ${JSON.stringify(name)});
+      if (tile == null) return null;
+      const video = tile.querySelector("video");
+      return ${expression};
+    })()`;
+  const tileColor = (page, name) =>
+    page.eval(
+      inTile(
+        name,
+        `(() => {
+          if (video.videoWidth === 0) return null;
+          const canvas = document.createElement("canvas");
+          canvas.width = 32;
+          canvas.height = 18;
+          const context = canvas.getContext("2d");
+          context.drawImage(video, 0, 0, 32, 18);
+          const data = context.getImageData(0, 0, 32, 18).data;
+          let r = 0, g = 0, b = 0;
+          for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+          const n = data.length / 4;
+          return { r: r / n, g: g / n, b: b / n };
+        })()`,
+      ),
+    );
+  const waitTileColor = async (page, name, predicate, timeout = 15000) => {
+    const end = Date.now() + timeout;
+    let last;
+    while (Date.now() < end) {
+      last = await tileColor(page, name);
+      if (predicate(last)) return last;
+      await sleep(200);
+    }
+    throw new Error(`${page.label}: timeout waiting for ${name}'s color\nlast: ${JSON.stringify(last)}`);
+  };
+  const clickTile = (page, name, selector) =>
+    page.eval(
+      inTile(name, selector == null ? "tile.click()" : `tile.querySelector(${JSON.stringify(selector)}).click()`),
+      true,
+    );
+  const presentAs = async (page, name, capture) => {
+    await page.eval(`window.__nextCapture = ${JSON.stringify(capture)}`);
+    await page.click("#present-button");
+    const s = await page.waitFor(`${page.label} dialog`, (s) => s.dialogOpen);
+    await page.submitDialog(name);
+    await page.waitFor(`${page.label} presenting`, (s) => s.videoLocal);
+    return s;
+  };
+  let p1;
+  let p2;
+  let p3;
+  let p4;
+  let p5;
+  let viewer;
+  let multiRoom;
+
+  await step("the server restarts with up to four presenters", async () => {
+    for (const page of [a, b]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+    rendezvous.kill();
+    const end = Date.now() + 10000;
+    while (await isPortInUse(4000)) {
+      if (Date.now() > end) throw new Error("the rendezvous server did not stop");
+      await sleep(100);
+    }
+    rendezvous = startRendezvous("4");
+    while (!(await isPortInUse(4000))) {
+      if (Date.now() > end + 10000) throw new Error("the rendezvous server did not start");
+      await sleep(100);
+    }
+  });
+
+  await step("two presenters are shown side by side, to viewers and to each other", async () => {
+    p1 = await newPage(cdp, "P1");
+    await p1.goto(`${ORIGIN}/`);
+    const s1 = await p1.waitFor("P1 start dialog", (s) => s.dialogOpen);
+    multiRoom = s1.hash;
+    await p1.eval(`window.__nextCapture = ${JSON.stringify({ color: "rgb(255, 0, 0)" })}`);
+    await p1.submitDialog("Pia");
+    await p1.waitFor("P1 presenting", (s) => s.videoLocal);
+    assert.equal(
+      await p1.eval(
+        `window.__displayOptions.audio.restrictOwnAudio === true && window.__displayOptions.selfBrowserSurface === "exclude"`,
+      ),
+      true,
+      "asks to keep this page's sound out and this tab out",
+    );
+
+    p2 = await newPage(cdp, "P2");
+    await p2.goto(`${ORIGIN}/${multiRoom}`);
+    await p2.waitFor("P2 joined", (s) => s.tiles.length === 1);
+    const s2 = await presentAs(p2, "Pablo", { color: "rgb(0, 0, 255)" });
+    assert.equal(s2.replaceOptions, null, "joins without choosing anyone");
+
+    viewer = await newPage(cdp, "V", { acceptLanguage: "ja" });
+    await viewer.goto(`${ORIGIN}/${multiRoom}`);
+    const sv = await viewer.waitFor(
+      "V sees two playing tiles",
+      (s) => s.tiles.length === 2 && s.tiles.every((t) => t.playing),
+      15000,
+    );
+    assert.deepEqual(
+      sv.tiles.map((t) => t.name),
+      ["Pia", "Pablo"],
+    );
+    await waitTileColor(viewer, "Pia", isRed);
+    await waitTileColor(viewer, "Pablo", isBlue);
+
+    const sp1 = await p1.waitFor("P1 sees Pablo", (s) => s.tiles.length === 2 && s.tiles[1].playing, 15000);
+    assert.deepEqual(
+      sp1.tiles.map((t) => [t.name, t.self, t.muted]),
+      [
+        ["You", true, true],
+        ["Pablo", false, false],
+      ],
+    );
+    await viewer.shot("20-two-presenters-ja");
+  });
+
+  await step("clicking a tile enlarges it, and it goes back with another click or when it ends", async () => {
+    await clickTile(viewer, "Pia");
+    let s = await viewer.waitFor("Pia enlarged", (s) => s.tiles.find((t) => t.name === "Pia")?.spotlighted);
+    assert.equal(await viewer.eval(`document.getElementById("stage").classList.contains("spotlight")`), true);
+    await viewer.shot("21-spotlight-ja");
+    await clickTile(viewer, "Pia");
+    s = await viewer.waitFor("back to even", (s) => s.tiles.every((t) => !t.spotlighted));
+    assert.equal(await viewer.eval(`document.getElementById("stage").classList.contains("spotlight")`), false);
+
+    await clickTile(viewer, "Pablo");
+    await viewer.waitFor("Pablo enlarged", (s) => s.tiles.find((t) => t.name === "Pablo")?.spotlighted);
+    await p2.click("#stop-button");
+    s = await viewer.waitFor("Pablo gone", (s) => s.tiles.length === 1);
+    assert.equal(s.tiles[0].spotlighted, false);
+    assert.equal(await viewer.eval(`document.getElementById("stage").classList.contains("spotlight")`), false);
+    await presentAs(p2, "Pablo", { color: "rgb(0, 0, 255)" });
+    await viewer.waitFor(
+      "V sees two playing tiles",
+      (s) => s.tiles.length === 2 && s.tiles.every((t) => t.playing),
+      15000,
+    );
+  });
+
+  await step("each tile has its own mute button, and the own tile stays muted", async () => {
+    await clickTile(viewer, "Pia", ".tile-mute");
+    let s = await viewer.waitFor("Pia muted", (s) => s.tiles.find((t) => t.name === "Pia")?.muted === true);
+    assert.equal(s.tiles.find((t) => t.name === "Pablo").muted, false, "Pablo still plays sound");
+    assert.equal(
+      await viewer.eval(inTile("Pia", `tile.querySelector(".tile-mute").getAttribute("aria-label")`)),
+      "消音を解除",
+    );
+    await clickTile(viewer, "Pia", ".tile-mute");
+    s = await viewer.waitFor("Pia unmuted", (s) => s.tiles.find((t) => t.name === "Pia")?.muted === false);
+    assert.equal(
+      await p1.eval(`document.querySelector("#stage .tile[data-self] .tile-mute").classList.contains("hidden")`),
+      true,
+    );
+  });
+
+  await step("up to four join without a question, and the fifth chooses whom to take over", async () => {
+    p3 = await newPage(cdp, "P3");
+    await p3.goto(`${ORIGIN}/${multiRoom}`);
+    await p3.waitFor("P3 joined", (s) => s.tiles.length === 2);
+    assert.equal((await presentAs(p3, "Paul", { color: "rgb(0, 160, 0)" })).replaceOptions, null);
+    p4 = await newPage(cdp, "P4");
+    await p4.goto(`${ORIGIN}/${multiRoom}`);
+    await p4.waitFor("P4 joined", (s) => s.tiles.length === 3);
+    assert.equal((await presentAs(p4, "Pat", { color: "rgb(255, 255, 0)" })).replaceOptions, null);
+    const sv = await viewer.waitFor(
+      "V sees four",
+      (s) => s.tiles.length === 4 && s.tiles.every((t) => t.playing),
+      20000,
+    );
+    assert.deepEqual(
+      sv.tiles.map((t) => t.name),
+      ["Pia", "Pablo", "Paul", "Pat"],
+    );
+    await viewer.shot("22-four-presenters-ja");
+
+    p5 = await newPage(cdp, "P5");
+    await p5.goto(`${ORIGIN}/${multiRoom}`);
+    await p5.waitFor("P5 joined", (s) => s.tiles.length === 4);
+    await p5.click("#present-button");
+    const s5 = await p5.waitFor("P5 dialog", (s) => s.dialogOpen);
+    assert.deepEqual(s5.replaceOptions, [
+      { name: "Pia", checked: false },
+      { name: "Pablo", checked: false },
+      { name: "Paul", checked: false },
+      { name: "Pat", checked: false },
+    ]);
+    assert.match(await p5.eval(`document.querySelector("#present-replace legend").textContent`), /Up to 4 people/);
+    await p5.shot("23-choose-replacement-en");
+    await p5.eval(
+      `[...document.querySelectorAll("#present-replace-options label")].find((l) => l.textContent.trim() === "Pablo").querySelector("input").click()`,
+    );
+    await p5.eval(`window.__nextCapture = ${JSON.stringify({ color: "rgb(255, 0, 255)" })}`);
+    await p5.submitDialog("Penny");
+    await p5.waitFor("P5 presenting", (s) => s.videoLocal);
+    const s2 = await p2.waitFor("Pablo notified", (s) => s.notices.includes("notice-taken-over"));
+    assert.equal(s2.noticeText[0], "Penny took over presenting.");
+    const sv2 = await viewer.waitFor(
+      "V sees Penny instead of Pablo",
+      (s) => JSON.stringify(s.tiles.map((t) => t.name)) === JSON.stringify(["Pia", "Paul", "Pat", "Penny"]),
+    );
+    assert.equal(sv2.tiles.length, 4);
+  });
+
+  await step("statuses belong to their tile", async () => {
+    await viewer.waitFor(
+      "all four playing",
+      (s) => s.tiles.length === 4 && s.tiles.every((t) => t.playing && t.status == null),
+      15000,
+    );
+    await p3.click("#hide-button");
+    const sv = await viewer.waitFor(
+      "Paul hidden",
+      (s) => s.tiles.find((t) => t.name === "Paul")?.status === "status-presenter-hidden",
+    );
+    assert.deepEqual(
+      sv.tiles.filter((t) => t.status != null).map((t) => t.name),
+      ["Paul"],
+    );
+    await p3.click("#show-button");
+    await viewer.waitFor("Paul shown", (s) => s.tiles.every((t) => t.status == null));
+  });
+
+  await step("the statistics list every received presentation, and what a presenter sends", async () => {
+    await openMenu(viewer);
+    const stats = await waitEval(
+      viewer,
+      "four received",
+      `(() => [...document.querySelectorAll("#stats-list .stats-entry")].map((e) => [e.querySelector(".stats-name").textContent, e.querySelector(".stats-direction").textContent]))()`,
+      (list) => list.length === 4,
+    );
+    assert.deepEqual(
+      stats.map((entry) => entry[1]),
+      ["受信", "受信", "受信", "受信"],
+    );
+    await closeMenu(viewer);
+    await openMenu(p1);
+    const own = await waitEval(
+      p1,
+      "sent and received",
+      `(() => [...document.querySelectorAll("#stats-list .stats-entry")].map((e) => e.querySelector(".stats-direction").textContent))()`,
+      (list) => list.includes("sending") && list.includes("receiving"),
+    );
+    console.log(`     P1 statistics: ${JSON.stringify(own)}`);
+    await closeMenu(p1);
+  });
+
+  await step("sharing sound that may contain this page's sound mutes the other presenters on this page", async () => {
+    await switchTo(p1, { color: "rgb(255, 0, 0)", audio: true, surface: "monitor" });
+    const s = await p1.waitFor(
+      "others muted and notified",
+      (s) => s.notices.includes("notice-echo-muted") && s.tiles.filter((t) => !t.self).every((t) => t.muted),
+    );
+    assert.match(s.noticeText.join(" "), /The other presenters are muted/);
+    // The person may still unmute one on purpose
+    await clickTile(p1, "Paul", ".tile-mute");
+    await p1.waitFor("Paul unmuted on purpose", (s) => s.tiles.find((t) => t.name === "Paul")?.muted === false);
+    await clickTile(p1, "Paul", ".tile-mute");
+
+    await p1.click("#notice-echo-muted .notice-close");
+    await switchTo(p1, { color: "rgb(255, 0, 0)", audio: true, surface: "browser" });
+    const s2 = await p1.waitFor(
+      "a tab capture does not mute",
+      (s) => s.tiles.find((t) => t.name === "Pat")?.muted === false,
+    );
+    assert.ok(!s2.notices.includes("notice-echo-muted"));
+    for (const page of [p1, p2, p3, p4, p5, viewer]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
   });
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");

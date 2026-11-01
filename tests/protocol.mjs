@@ -40,6 +40,8 @@ const server = spawn("node", ["server.ts"], {
     SCREENSY_LEFT_GRACE_MS: String(GRACE_MS),
     SCREENSY_LOST_GRACE_MS: String(LOST_GRACE_MS),
     SCREENSY_PING_INTERVAL_MS: String(PING_MS),
+    // The checks of takeovers are simplest with one presenter; the browser checks also run with four
+    SCREENSY_MAX_PRESENTERS: "1",
   },
   stdio: ["ignore", process.env.DEBUG ? "inherit" : "ignore", process.env.DEBUG ? "inherit" : "ignore"],
 });
@@ -130,6 +132,7 @@ test("join gets welcome and roomstate", async () => {
   assert.equal(typeof w.selfId, "string");
   assert.equal(typeof w.connectionId, "string");
   assert.equal(typeof w.resumeToken, "string");
+  assert.equal(w.maxPresenters, 1);
   const s = await lastState(a);
   assert.deepEqual(s.participants, [{ id: w.selfId, connectionId: w.connectionId, name: "Alice", connected: true }]);
   assert.deepEqual(s.presenters, []);

@@ -92,6 +92,10 @@ interface MessageWelcome {
   selfId: string;
   connectionId: string;
   resumeToken: string;
+  /**
+   * The number of people that can present at the same time
+   */
+  maxPresenters: number;
 }
 
 interface ParticipantState {
@@ -169,11 +173,6 @@ type ServerMessage =
 
 type MessageSender = (message: ClientMessage) => void;
 
-/**
- * The number of people that can present at the same time. It must match the rendezvous server.
- */
-const MAX_PRESENTERS = 1;
-
 const NAME_STORAGE_KEY = "screensy.name";
 const RESUME_STORAGE_PREFIX = "screensy.resume.";
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
@@ -221,30 +220,70 @@ const DEFAULT_QUALITY: QualitySettings = {
   degradation: "maintain-resolution",
 };
 
-type StatusId =
-  | "status-connecting"
-  | "status-server-reconnecting"
-  | "status-waiting"
+/**
+ * What the whole page shows over the stage
+ */
+type StatusId = "status-connecting" | "status-server-reconnecting" | "status-waiting";
+
+const STATUS_IDS: StatusId[] = ["status-connecting", "status-server-reconnecting", "status-waiting"];
+
+/**
+ * What a tile shows over its presentation. The values are the data-status attributes in #tile-template.
+ */
+type TileStatusId =
   | "status-joining"
-  | "status-switching"
   | "status-presenter-left"
   | "status-presenter-lost"
   | "status-presenter-resuming"
   | "status-presenter-hidden"
   | "status-self-hidden";
 
-const STATUS_IDS: StatusId[] = [
-  "status-connecting",
-  "status-server-reconnecting",
-  "status-waiting",
-  "status-joining",
-  "status-switching",
-  "status-presenter-left",
-  "status-presenter-lost",
-  "status-presenter-resuming",
-  "status-presenter-hidden",
-  "status-self-hidden",
-];
+/**
+ * One presentation on the stage
+ */
+interface TileView {
+  /**
+   * The presenter's participant ID, so that the tile, its sound setting and its enlargement stay the same when the
+   * presenter starts a new stream
+   */
+  key: string;
+  name: string;
+  self: boolean;
+  stream: MediaStream | null;
+  status: TileStatusId | null;
+  countdown: string | null;
+}
+
+interface Tile {
+  root: HTMLElement;
+  video: HTMLVideoElement;
+  name: HTMLElement;
+  status: HTMLElement;
+  mute: HTMLButtonElement;
+  self: boolean;
+}
+
+/**
+ * Whether a capture may contain the sound that this page plays. With system audio, it would send the other
+ * presenters' sound back to them, and two such presenters would echo forever. restrictOwnAudio removes this page's
+ * sound where the browser supports it. A tab capture only has that tab's sound, and this tab cannot be chosen.
+ */
+function capturesOwnAudio(stream: MediaStream): boolean {
+  const audio = stream.getAudioTracks()[0];
+
+  if (audio == null) {
+    return false;
+  }
+
+  const settings: MediaTrackSettings & { restrictOwnAudio?: boolean } = audio.getSettings();
+
+  if (settings.restrictOwnAudio === true) {
+    return false;
+  }
+
+  // The surface is that of the video; a window capture can still carry system audio
+  return stream.getVideoTracks()[0]?.getSettings().displaySurface !== "browser";
+}
 
 type NoticeId =
   | "notice-taken-over"
@@ -253,7 +292,8 @@ type NoticeId =
   | "notice-access-denied"
   | "notice-switch-failed"
   | "notice-blur-failed"
-  | "notice-full";
+  | "notice-full"
+  | "notice-echo-muted";
 
 type DialogMode = "start" | "resume";
 
@@ -396,16 +436,24 @@ function isValidDegradation(value: unknown): value is RTCDegradationPreference {
  * The options for getDisplayMedia. The capture must deliver at least the frame rate that is sent.
  */
 function displayMediaOptions(quality: QualitySettings): DisplayMediaStreamOptions {
-  return {
-    video: { frameRate: { ideal: quality.frameRate } },
-    audio: {
-      channelCount: { ideal: 2 },
-      sampleRate: { ideal: 192000 },
-      noiseSuppression: { ideal: false },
-      echoCancellation: { ideal: false },
-      autoGainControl: { ideal: false },
-    },
+  // Neither option is in lib.dom yet. Browsers that do not know them ignore them.
+  const audio: MediaTrackConstraints & { restrictOwnAudio?: boolean } = {
+    channelCount: { ideal: 2 },
+    sampleRate: { ideal: 192000 },
+    noiseSuppression: { ideal: false },
+    echoCancellation: { ideal: false },
+    autoGainControl: { ideal: false },
+    // Keep the other presenters' sound, which this page plays, out of a system audio capture
+    restrictOwnAudio: true,
   };
+  const options: DisplayMediaStreamOptions & { selfBrowserSurface?: "include" | "exclude" } = {
+    video: { frameRate: { ideal: quality.frameRate } },
+    audio,
+    // This tab plays the other presenters' sound
+    selfBrowserSurface: "exclude",
+  };
+
+  return options;
 }
 
 /**
@@ -1522,7 +1570,33 @@ class Ui {
   public onconfirm: ((name: string, replace: string | null) => void) | null = null;
   public oncancel: (() => void) | null = null;
 
-  public readonly video: HTMLVideoElement;
+  private readonly stage: HTMLElement;
+  private readonly tileTemplate: HTMLTemplateElement;
+  private readonly tiles = new Map<string, Tile>();
+
+  /**
+   * The presenter whose tile is enlarged, by participant ID
+   */
+  private spotlightKey: string | null = null;
+
+  /**
+   * The sound setting chosen for each presenter. Tiles without one follow the automatic muting.
+   */
+  private readonly userMuted = new Map<string, boolean>();
+
+  /**
+   * The browser did not allow playing sound before the first click on the page
+   */
+  private autoplayBlocked = false;
+
+  /**
+   * This presenter's capture may contain this page's sound, so the other presenters are muted
+   */
+  private echoMuted = false;
+
+  private readonly selfTileText: string;
+  private readonly muteText: string;
+  private readonly unmuteText: string;
 
   private readonly toolbar: HTMLElement;
   private readonly presentButton: HTMLButtonElement;
@@ -1565,7 +1639,23 @@ class Ui {
   private readonly noticeTimers = new Map<NoticeId, number>();
 
   constructor() {
-    this.video = getElement("stream", HTMLVideoElement);
+    this.stage = getElement("stage", HTMLElement);
+    this.tileTemplate = getElement("tile-template", HTMLTemplateElement);
+    this.selfTileText = getElement("text-self-tile", HTMLElement).textContent.trim();
+    this.muteText = getElement("text-mute", HTMLElement).textContent.trim();
+    this.unmuteText = getElement("text-unmute", HTMLElement).textContent.trim();
+
+    // The first click on the page allows playing sound
+    document.addEventListener(
+      "click",
+      () => {
+        if (this.autoplayBlocked) {
+          this.autoplayBlocked = false;
+          this.refreshAudio();
+        }
+      },
+      { capture: true },
+    );
     this.toolbar = getElement("toolbar", HTMLElement);
     this.presentButton = getElement("present-button", HTMLButtonElement);
     this.stopButton = getElement("stop-button", HTMLButtonElement);
@@ -1638,8 +1728,6 @@ class Ui {
       this.changeQuality(isValidDegradation(degradation) ? { degradation } : null);
     });
 
-    this.video.addEventListener("resize", () => this.onvideoresize?.());
-
     // The confirm handler must run synchronously in the submit event, so that getDisplayMedia still has the user
     // activation of the click
     getElement("present-form", HTMLFormElement).addEventListener("submit", (event: SubmitEvent) => {
@@ -1664,12 +1752,6 @@ class Ui {
     for (const notice of document.querySelectorAll<HTMLElement>(".notice")) {
       notice.querySelector(".notice-close")?.addEventListener("click", () => this.hideNotice(notice.id as NoticeId));
     }
-
-    this.video.onpause = () => {
-      if (this.video.srcObject != null) {
-        this.video.play().catch(() => {});
-      }
-    };
   }
 
   /**
@@ -1747,6 +1829,11 @@ class Ui {
         name.textContent = entry.name;
       }
 
+      // The presenter can both send to and receive from another presenter
+      for (const direction of fragment.querySelectorAll(".stats-direction")) {
+        direction.textContent = this.statsName("direction", entry.direction);
+      }
+
       for (const field of fragment.querySelectorAll<HTMLElement>("[data-field]")) {
         field.textContent = values[field.dataset.field ?? ""] ?? NO_VALUE;
       }
@@ -1765,7 +1852,7 @@ class Ui {
   /**
    * The translated name of a state, a route or a limitation, from #stats-names
    */
-  private statsName(kind: "state" | "route" | "limitation", value: string | null): string {
+  private statsName(kind: "state" | "route" | "limitation" | "direction", value: string | null): string {
     if (value == null) {
       return NO_VALUE;
     }
@@ -1845,41 +1932,190 @@ class Ui {
       : this.anonymousName.replace("{number}", (Number(participantId) + 1).toString());
   }
 
-  setVideo(stream: MediaStream | null, isLocal: boolean): void {
-    if (isLocal) {
-      // Never play back the presenter's own audio
-      this.video.muted = true;
+  /**
+   * Shows the presentations side by side, in the given order
+   */
+  showTiles(views: TileView[]): void {
+    const keys = new Set(views.map((view) => view.key));
+
+    for (const [key, tile] of this.tiles) {
+      if (!keys.has(key)) {
+        tile.video.srcObject = null;
+        tile.root.remove();
+        this.tiles.delete(key);
+      }
     }
 
-    if (this.video.srcObject !== stream) {
-      this.video.srcObject = stream;
+    if (this.spotlightKey != null && !keys.has(this.spotlightKey)) {
+      this.spotlightKey = null;
+    }
+
+    const roots = views.map((view) => {
+      let tile = this.tiles.get(view.key);
+
+      if (tile == null || tile.self !== view.self) {
+        tile?.root.remove();
+        tile = this.createTile(view.key, view.self);
+        this.tiles.set(view.key, tile);
+      }
+
+      tile.name.textContent = view.self ? this.selfTileText : view.name;
+
+      if (tile.video.srcObject !== view.stream) {
+        tile.video.srcObject = view.stream;
+      }
+
+      this.showTileStatus(tile, view);
+      return tile.root;
+    });
+
+    // Only move tiles when the order changed, because moving a video pauses it
+    const current = [...this.stage.children];
+
+    if (current.length !== roots.length || roots.some((root, index) => current[index] !== root)) {
+      this.stage.replaceChildren(...roots);
+    }
+
+    this.stage.dataset.count = roots.length.toString();
+    this.updateLayout();
+    this.refreshAudio();
+  }
+
+  /**
+   * Mutes the other presenters, or lets them follow their sound setting again
+   */
+  setEchoMuted(muted: boolean): void {
+    if (this.echoMuted !== muted) {
+      this.echoMuted = muted;
+      this.refreshAudio();
+    }
+  }
+
+  private createTile(key: string, self: boolean): Tile {
+    const fragment = this.tileTemplate.content.cloneNode(true) as DocumentFragment;
+    const find = <T extends Element>(selector: string, type: { new (): T; prototype: T }): T => {
+      const element = fragment.querySelector(selector);
+
+      if (!(element instanceof type)) {
+        throw new Error(`The tile template has no ${selector}.`);
+      }
+
+      return element;
+    };
+
+    const tile: Tile = {
+      root: find(".tile", HTMLElement),
+      video: find("video", HTMLVideoElement),
+      name: find(".tile-name", HTMLElement),
+      status: find(".tile-status", HTMLElement),
+      mute: find(".tile-mute", HTMLButtonElement),
+      self,
+    };
+
+    tile.root.dataset.key = key;
+    tile.root.toggleAttribute("data-self", self);
+    tile.video.muted = true;
+    // Never play back the presenter's own sound
+    tile.mute.classList.toggle("hidden", self);
+
+    // Playback stops when the tile moves, or when the browser refuses the sound
+    tile.video.addEventListener("pause", () => this.play(tile));
+
+    if (self) {
+      tile.video.addEventListener("resize", () => this.onvideoresize?.());
+    }
+
+    tile.root.addEventListener("click", () => {
+      this.spotlightKey = this.spotlightKey === key ? null : key;
+      this.updateLayout();
+    });
+
+    tile.mute.addEventListener("click", (event: MouseEvent) => {
+      event.stopPropagation();
+      this.userMuted.set(key, !this.isMuted(key));
+      this.refreshAudio();
+    });
+
+    find(".tile-fullscreen", HTMLButtonElement).addEventListener("click", (event: MouseEvent) => {
+      event.stopPropagation();
+      tile.root.requestFullscreen().catch(() => {});
+    });
+
+    return tile;
+  }
+
+  private showTileStatus(tile: Tile, view: TileView): void {
+    tile.status.classList.toggle("hidden", view.status == null);
+
+    for (const element of tile.status.querySelectorAll<HTMLElement>("[data-status]")) {
+      const shown = element.dataset.status === view.status;
+      element.classList.toggle("hidden", !shown);
+
+      if (shown) {
+        setNameSlots(element, view.name);
+
+        for (const countdownElement of element.querySelectorAll(".countdown")) {
+          countdownElement.classList.toggle("hidden", view.countdown == null);
+        }
+
+        for (const slot of element.querySelectorAll(".countdown-slot")) {
+          slot.textContent = view.countdown ?? "";
+        }
+      }
     }
   }
 
   /**
-   * @param countdown The time left, shown in the ".countdown" of the status, or null to hide it
+   * Lays the tiles out evenly, or enlarges one of them and puts the others in a column
    */
-  showStatus(id: StatusId | null, name = "", countdown: string | null = null): void {
+  private updateLayout(): void {
+    const spotlight = this.spotlightKey != null && this.tiles.size > 1;
+    this.stage.classList.toggle("spotlight", spotlight);
+    this.stage.style.setProperty("--others", Math.max(1, this.tiles.size - 1).toString());
+
+    for (const [key, tile] of this.tiles) {
+      tile.root.classList.toggle("spotlighted", spotlight && key === this.spotlightKey);
+    }
+  }
+
+  private isMuted(key: string): boolean {
+    return this.userMuted.get(key) ?? (this.autoplayBlocked || this.echoMuted);
+  }
+
+  private refreshAudio(): void {
+    for (const [key, tile] of this.tiles) {
+      const muted = tile.self || this.isMuted(key);
+      tile.video.muted = muted;
+      tile.mute.textContent = muted ? "🔇" : "🔊";
+      tile.mute.setAttribute("aria-label", muted ? this.unmuteText : this.muteText);
+      tile.mute.setAttribute("aria-pressed", muted.toString());
+      this.play(tile);
+    }
+  }
+
+  /**
+   * Plays a tile. If the browser refuses the sound before the first click, every tile without its own sound setting
+   * plays muted until then.
+   */
+  private play(tile: Tile): void {
+    if (tile.video.srcObject == null || !tile.video.paused) {
+      return;
+    }
+
+    tile.video.play().catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "NotAllowedError" && !tile.video.muted) {
+        this.autoplayBlocked = true;
+        this.refreshAudio();
+      }
+    });
+  }
+
+  /**
+   * Shows a status of the whole page over the stage, or none
+   */
+  showStatus(id: StatusId | null): void {
     for (const statusId of STATUS_IDS) {
-      const element = document.getElementById(statusId);
-
-      if (element == null) {
-        continue;
-      }
-
-      element.classList.toggle("hidden", statusId !== id);
-
-      if (statusId === id) {
-        setNameSlots(element, name);
-
-        for (const countdownElement of element.querySelectorAll(".countdown")) {
-          countdownElement.classList.toggle("hidden", countdown == null);
-        }
-
-        for (const slot of element.querySelectorAll(".countdown-slot")) {
-          slot.textContent = countdown ?? "";
-        }
-      }
+      document.getElementById(statusId)?.classList.toggle("hidden", statusId !== id);
     }
 
     this.status.classList.toggle("hidden", id == null);
@@ -1940,10 +2176,16 @@ class Ui {
    * Opens the dialog that starts or resumes presenting.
    *
    * @param mode "start" to start presenting, "resume" to resume after a reload
-   * @param replaceable In a full room, the presenters to choose from, one of whom is taken over; otherwise null
+   * @param full In a full room, its limit and the presenters to choose from, one of whom is taken over; otherwise null
    * @param name The name to fill in
    */
-  openDialog(mode: DialogMode, replaceable: { id: string; name: string }[] | null, name: string): void {
+  openDialog(
+    mode: DialogMode,
+    full: { maxPresenters: number; presenters: { id: string; name: string }[] } | null,
+    name: string,
+  ): void {
+    const replaceable = full?.presenters ?? null;
+
     for (const element of this.dialog.querySelectorAll<HTMLElement>("[data-mode]")) {
       element.classList.toggle("hidden", element.dataset.mode !== mode);
     }
@@ -1968,7 +2210,7 @@ class Ui {
     fieldset.classList.toggle("hidden", replaceable == null);
 
     for (const slot of fieldset.querySelectorAll(".max-slot")) {
-      slot.textContent = MAX_PRESENTERS.toString();
+      slot.textContent = full?.maxPresenters.toString() ?? "";
     }
 
     this.nameInput.value = name;
@@ -2002,6 +2244,16 @@ class RoomController {
    * The room state before the current one, to tell who took over a seat
    */
   private previousState: MessageRoomState | null = null;
+
+  /**
+   * The number of people that can present at the same time, from "welcome"
+   */
+  private maxPresenters = 1;
+
+  /**
+   * Whether the notice about muting the other presenters was shown for the current capture
+   */
+  private echoNoticeShown = false;
   private outgoing: OutgoingStream | null = null;
   private readonly incoming = new Map<string, IncomingStream>();
 
@@ -2016,7 +2268,6 @@ class RoomController {
   private offerToPresent: boolean;
 
   private dialogMode: DialogMode | null = null;
-  private lastShownStreamId: string | null = null;
 
   /**
    * When the grace period of each reconnecting presenter ends, by participant ID, in performance.now() time. The
@@ -2185,6 +2436,7 @@ class RoomController {
 
   private handleWelcome(message: MessageWelcome): void {
     this.selfId = message.selfId;
+    this.maxPresenters = message.maxPresenters;
     writeStorage(getSessionStorage, this.resumeStorageKey, message.resumeToken);
 
     // The connection ID changed, so every presenter opens new connections to this client
@@ -2339,13 +2591,19 @@ class RoomController {
 
     // A full room needs one of its presenters to be taken over. Reconnecting presenters still hold their seat.
     const presenters = this.state?.presenters ?? [];
-    const replaceable =
-      presenters.length >= MAX_PRESENTERS
-        ? presenters.map((presenter) => ({ id: presenter.participantId, name: this.nameOf(presenter.participantId) }))
+    const full =
+      presenters.length >= this.maxPresenters
+        ? {
+            maxPresenters: this.maxPresenters,
+            presenters: presenters.map((presenter) => ({
+              id: presenter.participantId,
+              name: this.nameOf(presenter.participantId),
+            })),
+          }
         : null;
 
     this.dialogMode = "start";
-    this.ui.openDialog("start", replaceable, this.storedName());
+    this.ui.openDialog("start", full, this.storedName());
     this.render();
   }
 
@@ -2516,7 +2774,7 @@ class RoomController {
   }
 
   /**
-   * The presenter sees one entry per viewer, a viewer sees the stream they receive
+   * One entry per viewer that this client sends to, and one per presentation that it receives
    */
   private async updateStats(): Promise<void> {
     if (this.collectingStats) {
@@ -2528,17 +2786,14 @@ class RoomController {
     try {
       const targets: { name: string; direction: StatsDirection; connection: RTCPeerConnection }[] = [];
 
-      if (this.outgoing != null) {
-        for (const { participantId, connection } of this.outgoing.connections()) {
-          targets.push({ name: this.nameOf(participantId), direction: "send", connection });
-        }
-      } else {
-        const presenter = this.state?.presenters.find(
-          (presenter) => presenter.participantId !== this.selfId && presenter.status === "live",
-        );
-        const stream = presenter == null ? undefined : this.incoming.get(presenter.streamId);
+      for (const { participantId, connection } of this.outgoing?.connections() ?? []) {
+        targets.push({ name: this.nameOf(participantId), direction: "send", connection });
+      }
 
-        if (presenter != null && stream != null) {
+      for (const presenter of this.state?.presenters ?? []) {
+        const stream = this.incoming.get(presenter.streamId);
+
+        if (presenter.participantId !== this.selfId && presenter.status === "live" && stream != null) {
           targets.push({
             name: this.nameOf(presenter.participantId),
             direction: "receive",
@@ -2660,15 +2915,14 @@ class RoomController {
   private render(): void {
     const state = this.state;
     const ready = this.signaling.isOpen && state != null && this.selfId != null;
+    const tiles = ready ? this.tileViews(state) : [];
+
+    // While the server is away, only the own preview stays
+    if (!ready && this.outgoing != null) {
+      tiles.push(this.ownTile());
+    }
 
     let status: StatusId | null = null;
-    let statusName = "";
-    let countdown: string | null = null;
-    let video: MediaStream | null = null;
-
-    if (this.outgoing != null) {
-      video = this.outgoing.previewStream;
-    }
 
     if (!this.signaling.everConnected) {
       status = "status-connecting";
@@ -2676,53 +2930,19 @@ class RoomController {
       status = "status-server-reconnecting";
     } else if (state == null) {
       status = "status-connecting";
-    } else if (this.outgoing == null) {
-      const presenter = state.presenters.find((presenter) => presenter.participantId !== this.selfId);
-
-      if (presenter == null) {
-        status = "status-waiting";
-      } else {
-        statusName = this.nameOf(presenter.participantId);
-
-        const stream = this.incoming.get(presenter.streamId);
-
-        if (presenter.status === "reconnecting") {
-          const participant = state.participants.find((participant) => participant.id === presenter.participantId);
-          const deadline = this.graceDeadlines.get(presenter.participantId);
-
-          if (participant?.connected) {
-            // Back after a reload, choosing the screen again
-            status = "status-presenter-resuming";
-          } else {
-            status = presenter.disconnectReason === "lost" ? "status-presenter-lost" : "status-presenter-left";
-            countdown = deadline == null ? null : formatCountdown(deadline - performance.now());
-          }
-        } else if (stream?.mediaStream != null) {
-          // While hidden, the stream stays attached: it is black and silent
-          video = stream.mediaStream;
-          this.lastShownStreamId = presenter.streamId;
-
-          if (presenter.hidden) {
-            status = "status-presenter-hidden";
-          }
-        } else if (presenter.hidden) {
-          status = "status-presenter-hidden";
-        } else if (this.lastShownStreamId != null && this.lastShownStreamId !== presenter.streamId) {
-          status = "status-switching";
-        } else {
-          status = "status-joining";
-        }
-      }
-    } else if (this.outgoing.hidden) {
-      status = "status-self-hidden";
+    } else if (tiles.length === 0) {
+      status = "status-waiting";
     }
 
-    this.ui.setVideo(video, this.outgoing != null);
-    this.ui.showStatus(status, statusName, countdown);
+    this.ui.showTiles(tiles);
+    this.ui.showStatus(status);
+    this.updateEchoProtection(tiles);
 
-    if (countdown != null && this.countdownTimer == null) {
+    const counting = tiles.some((tile) => tile.countdown != null);
+
+    if (counting && this.countdownTimer == null) {
       this.countdownTimer = window.setInterval(() => this.render(), 1000);
-    } else if (countdown == null && this.countdownTimer != null) {
+    } else if (!counting && this.countdownTimer != null) {
       window.clearInterval(this.countdownTimer);
       this.countdownTimer = null;
     }
@@ -2740,6 +2960,100 @@ class RoomController {
       busy: this.trackChangeInProgress,
       viewers,
     });
+  }
+
+  /**
+   * One tile per presenter, in the order of the room. The own tile takes the own seat, or comes last while the
+   * server has not accepted the presentation yet.
+   */
+  private tileViews(state: MessageRoomState): TileView[] {
+    const tiles: TileView[] = [];
+    let ownTileShown = false;
+
+    for (const presenter of state.presenters) {
+      if (presenter.participantId === this.selfId) {
+        // Without a capture, the own seat is waiting in the resume dialog
+        if (this.outgoing != null) {
+          tiles.push(this.ownTile());
+          ownTileShown = true;
+        }
+
+        continue;
+      }
+
+      tiles.push(this.remoteTile(state, presenter));
+    }
+
+    if (this.outgoing != null && !ownTileShown) {
+      tiles.push(this.ownTile());
+    }
+
+    return tiles;
+  }
+
+  private ownTile(): TileView {
+    const outgoing = this.outgoing;
+
+    return {
+      key: this.selfId ?? "self",
+      name: "",
+      self: true,
+      stream: outgoing?.previewStream ?? null,
+      status: outgoing?.hidden ? "status-self-hidden" : null,
+      countdown: null,
+    };
+  }
+
+  private remoteTile(state: MessageRoomState, presenter: PresenterState): TileView {
+    const tile: TileView = {
+      key: presenter.participantId,
+      name: this.nameOf(presenter.participantId),
+      self: false,
+      stream: null,
+      status: null,
+      countdown: null,
+    };
+
+    if (presenter.status === "reconnecting") {
+      const participant = state.participants.find((participant) => participant.id === presenter.participantId);
+      const deadline = this.graceDeadlines.get(presenter.participantId);
+
+      if (participant?.connected) {
+        // Back after a reload, choosing the screen again
+        tile.status = "status-presenter-resuming";
+      } else {
+        tile.status = presenter.disconnectReason === "lost" ? "status-presenter-lost" : "status-presenter-left";
+        tile.countdown = deadline == null ? null : formatCountdown(deadline - performance.now());
+      }
+
+      return tile;
+    }
+
+    // While hidden, the stream stays attached: it is black and silent
+    tile.stream = this.incoming.get(presenter.streamId)?.mediaStream ?? null;
+
+    if (presenter.hidden) {
+      tile.status = "status-presenter-hidden";
+    } else if (tile.stream == null) {
+      tile.status = "status-joining";
+    }
+
+    return tile;
+  }
+
+  /**
+   * Mutes the other presenters on this page while the own capture may contain this page's sound
+   */
+  private updateEchoProtection(tiles: TileView[]): void {
+    const needed = this.outgoing != null && capturesOwnAudio(this.outgoing.mediaStream);
+    this.ui.setEchoMuted(needed);
+
+    if (!needed) {
+      this.echoNoticeShown = false;
+    } else if (!this.echoNoticeShown && tiles.some((tile) => !tile.self)) {
+      this.echoNoticeShown = true;
+      this.ui.showNotice("notice-echo-muted");
+    }
   }
 }
 
