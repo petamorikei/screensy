@@ -900,7 +900,6 @@ class RoomController {
           credential: "screensy",
         },
       ],
-      iceCandidatePoolSize: 8,
     };
 
     this.signaling.onopen = () => this.join();

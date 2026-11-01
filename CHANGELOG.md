@@ -61,6 +61,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+-   The video now reaches viewers more reliably. The client no longer sets
+    `iceCandidatePoolSize`. Candidates that Chrome gathered in advance
+    sometimes left the connection stuck: the viewer could not reach the
+    presenter, and no video arrived.
 -   The website now connects to the rendezvous server with `ws://` when it is
     served over plain HTTP. It always used `wss://` before, because it compared
     `location.protocol` with "http" instead of "http:".
