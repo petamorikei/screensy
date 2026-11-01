@@ -7,8 +7,39 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## Unreleased
 
+### Added
+
+-   Anyone in a room can start presenting at any time with the "Present"
+    button. If someone else is presenting, a confirmation dialog appears, and
+    the new presenter takes over. The room no longer closes when the presenter
+    leaves.
+-   Presenters enter a display name, which the browser remembers for the next
+    time. Status messages and notices show the presenter's name, for example
+    when someone takes over.
+-   A "Stop presenting" button. Presenting also stops when the browser's own
+    "Stop sharing" control ends the capture.
+-   Viewers see the state of the room: waiting for a presenter, connecting,
+    and switching to a new presenter. When the presenter is away, viewers see
+    whether they left the page, lost their connection or are resuming, with
+    the time left before the seat is freed.
+-   The client reconnects to the rendezvous server when the connection drops.
+    A presenter who leaves the page, for example with a reload, keeps their
+    seat for 30 seconds and can resume from a dialog. A presenter whose
+    connection breaks keeps their seat for 5 minutes and resumes
+    automatically when it comes back.
+-   The rendezvous server pings its clients, so that it notices dead
+    connections, and limits the size of incoming messages to 64 KiB.
+
 ### Changed
 
+-   Replace the signaling protocol. The fixed broadcaster and viewer roles are
+    gone. The server sends the state of the room to every participant and
+    relays WebRTC messages per stream. The protocol is ready for several
+    presenters at once, but the server allows one for now.
+-   Denying access to the screen now shows a notice that can be closed,
+    instead of a full-page message. The person stays in the room as a viewer.
+-   The website sends `Cache-Control: no-cache`, so that browsers do not run an
+    outdated "screensy.js" against a newer rendezvous server.
 -   Update the toolchain: Node.js 26, Go 1.27 and TypeScript 7. The versions
     are pinned with mise in "mise.toml".
 -   Manage the JavaScript dependencies with pnpm in a workspace, instead of
@@ -26,8 +57,17 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   The website container now serves files only from its own directory, instead
     of from the root of the filesystem.
 
+### Removed
+
+-   Remove the Chinese, Czech, Dutch, French, German, Hebrew and Portuguese
+    translations. Screensy is now available in English and Japanese only.
+
 ### Fixed
 
+-   The video now reaches viewers more reliably. The client no longer sets
+    `iceCandidatePoolSize`. Candidates that Chrome gathered in advance
+    sometimes left the connection stuck: the viewer could not reach the
+    presenter, and no video arrived.
 -   The website now connects to the rendezvous server with `ws://` when it is
     served over plain HTTP. It always used `wss://` before, because it compared
     `location.protocol` with "http" instead of "http:".

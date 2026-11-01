@@ -21,15 +21,6 @@
                 </p>
             </div>
         </noscript>
-        <div id="access-denied" class="popup hidden">
-            <h1>You denied access to your screen.</h1>
-            <p>
-                Screensy needs access to your screen in order to share it, but
-                you denied access. Try reloading this webpage and provide access
-                when your browser asks you for it. If your browser does not ask
-                you for access, check your browser settings.
-            </p>
-        </div>
         <div id="screensharing-not-supported" class="popup hidden">
             <h1>Screensharing is not supported or not enabled.</h1>
             <p>
@@ -70,12 +61,115 @@
                 device or contact the administrator of this website.
             </p>
         </div>
-        <div id="broadcaster-disconnected" class="popup hidden">
-            <h1>The broadcaster has disconnected.</h1>
+        <div id="toolbar" class="toolbar hidden">
+            <button id="present-button" class="hidden" type="button">
+                Present
+            </button>
+            <button id="stop-button" class="hidden" type="button">
+                Stop presenting
+            </button>
+            <span id="viewer-count" class="hidden">
+                Viewers: <span id="viewer-count-value">0</span>
+            </span>
         </div>
-        <div id="click-to-share" class="popup clickable hidden">
-            <h1>Click anywhere to share your screen.</h1>
+        <div id="status" class="status hidden" role="status">
+            <p id="status-connecting" class="hidden">Connecting…</p>
+            <p id="status-server-reconnecting" class="hidden">
+                Lost the connection to the server. Reconnecting…
+            </p>
+            <p id="status-waiting" class="hidden">
+                Nobody is presenting yet. The screen appears here when someone
+                starts.
+            </p>
+            <p id="status-joining" class="hidden">
+                Connecting to <span class="name-slot"></span>'s screen…
+            </p>
+            <p id="status-switching" class="hidden">
+                Switching to <span class="name-slot"></span>'s screen…
+            </p>
+            <p id="status-presenter-left" class="hidden">
+                <span class="name-slot"></span> left the page. Waiting for them
+                to come back…<span class="countdown">
+                    (<span class="countdown-slot"></span> left)</span
+                >
+            </p>
+            <p id="status-presenter-lost" class="hidden">
+                <span class="name-slot"></span>'s connection was lost. Waiting
+                for them to reconnect…<span class="countdown">
+                    (<span class="countdown-slot"></span> left)</span
+                >
+            </p>
+            <p id="status-presenter-resuming" class="hidden">
+                <span class="name-slot"></span> is resuming the presentation…
+            </p>
         </div>
+        <div class="notices">
+            <div id="notice-taken-over" class="notice hidden" role="status">
+                <p><span class="name-slot"></span> took over presenting.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-moved-to-other-tab" class="notice hidden" role="status">
+                <p>
+                    Your presentation moved to another tab, so this tab stopped
+                    presenting.
+                </p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-connection-lost" class="notice hidden" role="status">
+                <p>Presenting stopped because the connection was lost.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-access-denied" class="notice hidden" role="status">
+                <p>
+                    Could not access your screen. If your browser did not ask
+                    for access, check its settings.
+                </p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+        </div>
+        <dialog id="present-dialog">
+            <form id="present-form">
+                <h1 data-mode="start">Present your screen</h1>
+                <h1 data-mode="resume">Resume presenting?</h1>
+                <p data-mode="resume">
+                    You were presenting before the page reloaded. Choose your
+                    screen again to continue.
+                </p>
+                <p id="present-takeover-warning" class="hidden">
+                    <span class="name-slot"></span> is presenting. Starting will
+                    take over from them.
+                </p>
+                <label for="present-name">Your name</label>
+                <input
+                    id="present-name"
+                    name="name"
+                    type="text"
+                    maxlength="32"
+                    pattern=".*\S.*"
+                    required
+                    autocomplete="nickname"
+                />
+                <div class="dialog-buttons">
+                    <button id="present-cancel" type="button">
+                        <span data-mode="start">Cancel</span>
+                        <span data-mode="resume">Stop presenting</span>
+                    </button>
+                    <button type="submit">
+                        <span data-mode="start">Start presenting</span>
+                        <span data-mode="resume">Resume</span>
+                    </button>
+                </div>
+            </form>
+        </dialog>
+        <span id="text-anonymous" class="hidden">Someone</span>
         <video
             id="stream"
             autoplay="autoplay"

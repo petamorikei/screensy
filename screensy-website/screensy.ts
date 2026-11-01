@@ -23,85 +23,183 @@
  * this page.
  */
 
-interface MessageJoin {
-  type: "join";
-  roomId: string;
-}
+// The signaling protocol. These types are duplicated in screensy-rendezvous/server.ts.
 
 /**
- * Tells the broadcaster a viewer has connected
- */
-interface MessageViewer {
-  type: "viewer";
-  viewerId: string;
-}
-
-/**
- * Ask the server to resend the VIEWER messages
- */
-interface MessageRequestViewers {
-  type: "requestviewers";
-}
-
-/**
- * Tells the broadcaster a viewer has disconnected
- */
-interface MessageViewerDisconnected {
-  type: "viewerdisconnected";
-  viewerId: string;
-}
-
-/**
- * Tells the viewer the broadcaster has disconnected.
- */
-interface MessageBroadcasterDisconnected {
-  type: "broadcasterdisconnected";
-}
-
-/**
- * The WebRTC payload of a message, discriminated by its kind
+ * The WebRTC payload of a signal, discriminated by its kind
  */
 type WebRTCPayload =
   | { kind: "offer" | "answer"; message: RTCSessionDescriptionInit }
   | { kind: "candidate"; message: RTCIceCandidateInit };
 
-/**
- * Sends a WebRTC message between the viewer and the server
- */
-type MessageWebRTCViewer = { type: "webrtcviewer" } & WebRTCPayload;
+// Messages from the client to the server
 
 /**
- * Sends a WebRTC message between the server and the broadcaster
+ * Joins a room. A resume token from an earlier "welcome" takes over that participant.
  */
-type MessageWebRTCBroadcaster = { type: "webrtcbroadcaster"; viewerId: string } & WebRTCPayload;
-
-type Message =
-  | MessageViewer
-  | MessageViewerDisconnected
-  | MessageBroadcasterDisconnected
-  | MessageWebRTCViewer
-  | MessageWebRTCBroadcaster
-  | MessageRequestViewers
-  | MessageJoin;
-
-type MessageSender = (msg: Message) => Promise<void>;
-
-/**
- * Pause execution until the listener/event has fired on the given target.
- *
- * @see https://stackoverflow.com/a/63718685
- */
-function wait(target: EventTarget, listenerName: string): Promise<Event> {
-  // Lambda that returns a listener for the given resolve lambda
-  const listener = (resolve: (value: Event | PromiseLike<Event>) => void) => (event: Event) => {
-    target.removeEventListener(listenerName, listener(resolve));
-    resolve(event);
-  };
-
-  return new Promise((resolve, _reject) => {
-    target.addEventListener(listenerName, listener(resolve));
-  });
+interface MessageJoin {
+  type: "join";
+  roomId: string;
+  name: string;
+  resumeToken?: string;
 }
+
+interface MessageSetName {
+  type: "setname";
+  name: string;
+}
+
+/**
+ * Starts presenting, after the screen has been captured. With resume, the server only accepts it when this client
+ * still holds a presenter seat.
+ */
+interface MessagePresent {
+  type: "present";
+  resume: boolean;
+}
+
+interface MessageStopPresenting {
+  type: "stoppresenting";
+}
+
+interface MessageStreamState {
+  type: "streamstate";
+  streamId: string;
+  hidden: boolean;
+}
+
+/**
+ * Sends a WebRTC message to another participant through the server
+ */
+type MessageSignalToServer = { type: "signal"; to: string; toConnection: string; streamId: string } & WebRTCPayload;
+
+type ClientMessage =
+  | MessageJoin
+  | MessageSetName
+  | MessagePresent
+  | MessageStopPresenting
+  | MessageStreamState
+  | MessageSignalToServer;
+
+// Messages from the server to the client
+
+interface MessageWelcome {
+  type: "welcome";
+  selfId: string;
+  connectionId: string;
+  resumeToken: string;
+}
+
+interface ParticipantState {
+  id: string;
+  connectionId: string;
+  name: string;
+  connected: boolean;
+}
+
+/**
+ * Why a presenter seat is reconnecting: "left" if the page closed its socket (a reload or a closed tab), "lost" if the
+ * connection broke.
+ */
+type DisconnectReason = "left" | "lost";
+
+interface PresenterState {
+  participantId: string;
+  streamId: string;
+  hidden: boolean;
+  status: "live" | "reconnecting";
+  /**
+   * Null while the seat is live
+   */
+  disconnectReason: DisconnectReason | null;
+  /**
+   * The time left before the seat is freed, or null if no grace period runs
+   */
+  graceRemainingMs: number | null;
+}
+
+interface MessageRoomState {
+  type: "roomstate";
+  participants: ParticipantState[];
+  presenters: PresenterState[];
+}
+
+/**
+ * A WebRTC message from another participant. The server sets "from" and "fromConnection".
+ */
+type MessageSignalFromServer = {
+  type: "signal";
+  from: string;
+  fromConnection: string;
+  streamId: string;
+} & WebRTCPayload;
+
+interface MessagePresentAccepted {
+  type: "presentaccepted";
+  streamId: string;
+}
+
+interface MessagePresentRejected {
+  type: "presentrejected";
+}
+
+/**
+ * Another socket has joined with this client's resume token, for example from a duplicated tab.
+ */
+interface MessageReplaced {
+  type: "replaced";
+}
+
+type ServerMessage =
+  | MessageWelcome
+  | MessageRoomState
+  | MessageSignalFromServer
+  | MessagePresentAccepted
+  | MessagePresentRejected
+  | MessageReplaced;
+
+type MessageSender = (message: ClientMessage) => void;
+
+const NAME_STORAGE_KEY = "screensy.name";
+const RESUME_STORAGE_PREFIX = "screensy.resume.";
+const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
+const NOTICE_TIMEOUT_MS = 10000;
+
+const DISPLAY_MEDIA_OPTIONS: DisplayMediaStreamOptions = {
+  video: true,
+  audio: {
+    channelCount: { ideal: 2 },
+    sampleRate: { ideal: 192000 },
+    noiseSuppression: { ideal: false },
+    echoCancellation: { ideal: false },
+    autoGainControl: { ideal: false },
+  },
+};
+
+type StatusId =
+  | "status-connecting"
+  | "status-server-reconnecting"
+  | "status-waiting"
+  | "status-joining"
+  | "status-switching"
+  | "status-presenter-left"
+  | "status-presenter-lost"
+  | "status-presenter-resuming";
+
+const STATUS_IDS: StatusId[] = [
+  "status-connecting",
+  "status-server-reconnecting",
+  "status-waiting",
+  "status-joining",
+  "status-switching",
+  "status-presenter-left",
+  "status-presenter-lost",
+  "status-presenter-resuming",
+];
+
+type NoticeId = "notice-taken-over" | "notice-moved-to-other-tab" | "notice-connection-lost" | "notice-access-denied";
+
+type DialogMode = "start" | "resume";
 
 /**
  * Displays the popup with the given name. Does nothing if the popup does not
@@ -110,13 +208,7 @@ function wait(target: EventTarget, listenerName: string): Promise<Event> {
  * @param name Name of the popup to display
  */
 function showPopup(name: string): void {
-  const element = document.getElementById(name);
-
-  if (element == null) {
-    return;
-  }
-
-  element.classList.remove("hidden");
+  document.getElementById(name)?.classList.remove("hidden");
 }
 
 /**
@@ -126,324 +218,730 @@ function showPopup(name: string): void {
  * @param name Name of the popup to hide
  */
 function hidePopup(name: string): void {
-  const element = document.getElementById(name);
-
-  if (element == null) {
-    return;
-  }
-
-  element.classList.add("hidden");
-}
-
-interface Client {
-  /**
-   * Handles the messages received from the signaling server.
-   *
-   * @param msg
-   */
-  handleMessage(msg: Message): void;
+  document.getElementById(name)?.classList.add("hidden");
 }
 
 /**
- * Represents a broadcaster. The broadcaster is responsible for capturing and sending
- * their screen (and maybe audio) to all peers.
+ * Returns the element with the given ID, or throws if it is missing or has the wrong type. Every translation file
+ * must contain the same elements.
  */
-class Broadcaster implements Client {
-  public onviewerjoin: ((viewerId: string) => void) | null = null;
-  public onviewerleave: ((viewerId: string) => void) | null = null;
+function getElement<T extends HTMLElement>(id: string, type: { new (): T; prototype: T }): T {
+  const element = document.getElementById(id);
 
-  private readonly sendMessage: MessageSender;
-  private readonly rtcConfig: RTCConfiguration;
-  private readonly mediaStream: MediaStream;
+  if (!(element instanceof type)) {
+    throw new Error(`The element #${id} is missing.`);
+  }
 
-  private readonly viewers: { [id: string]: RTCPeerConnection } = {};
+  return element;
+}
 
-  /**
-   * Broadcaster constructor.
-   *
-   * @param sendMessage Function to send a message to the server
-   * @param rtcConfig The WebRTC configuration to use for the WebRTC connection
-   * @param mediaStream The MediaStream to broadcast
-   */
-  constructor(sendMessage: MessageSender, rtcConfig: RTCConfiguration, mediaStream: MediaStream) {
-    this.sendMessage = sendMessage;
-    this.rtcConfig = rtcConfig;
-    this.mediaStream = mediaStream;
+/**
+ * Fills every ".name-slot" inside the element with the given name.
+ */
+function setNameSlots(element: Element, name: string): void {
+  for (const slot of element.querySelectorAll(".name-slot")) {
+    slot.textContent = name;
+  }
+}
+
+/**
+ * Formats a duration as "m:ss", rounded up, so that "0:00" only shows when the time is up.
+ */
+function formatCountdown(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+/**
+ * Reads a value from Web Storage. Storage can be unavailable, for example in a private window.
+ */
+function readStorage(getStorage: () => Storage, key: string): string | null {
+  try {
+    return getStorage().getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes a value to Web Storage, or removes it if the value is null.
+ */
+function writeStorage(getStorage: () => Storage, key: string, value: string | null): void {
+  try {
+    if (value == null) {
+      getStorage().removeItem(key);
+    } else {
+      getStorage().setItem(key, value);
+    }
+  } catch {
+    // Storage is unavailable. The value is simply not remembered.
+  }
+}
+
+const getLocalStorage = () => window.localStorage;
+const getSessionStorage = () => window.sessionStorage;
+
+/**
+ * Limits the encoding of each sender, once the connection has gathered its ICE candidates.
+ */
+async function applyEncodingParameters(connection: RTCPeerConnection): Promise<void> {
+  for (const sender of connection.getSenders()) {
+    if (sender.track == null) {
+      continue;
+    }
+
+    const parameters = sender.getParameters();
+
+    // https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpSender/setParameters#currently_compatible_implementation
+    if (!parameters.encodings) {
+      parameters.encodings = [{}];
+    }
+
+    if (sender.track.kind === "audio") {
+      parameters.encodings[0].maxBitrate = 960000; // 960 Kbps, does gek
+    } else if (sender.track.kind === "video") {
+      parameters.encodings[0].maxFramerate = 30;
+      parameters.encodings[0].maxBitrate = 100000000; // 100 Mbps
+    }
+
+    try {
+      await sender.setParameters(parameters);
+    } catch (error) {
+      console.warn("Could not set the encoding parameters.", error);
+    }
+  }
+}
+
+/**
+ * Connects to the signaling server and reconnects when the connection is lost.
+ */
+class SignalingConnection {
+  public onopen: (() => void) | null = null;
+  public onclose: (() => void) | null = null;
+  public onmessage: ((message: ServerMessage) => void) | null = null;
+
+  private readonly url: string;
+  private socket: WebSocket | null = null;
+  private attempt = 0;
+  private closed = false;
+  private hasConnected = false;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  get isOpen(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
   }
 
   /**
-   * @inheritDoc
+   * Whether the connection has been open at least once
    */
-  async handleMessage(msg: MessageViewer | MessageViewerDisconnected | MessageWebRTCBroadcaster): Promise<void> {
-    switch (msg.type) {
-      case "viewer":
-        await this.addViewer(msg.viewerId);
-        break;
-      case "viewerdisconnected":
-        await this.removeViewer(msg.viewerId);
-        break;
-      case "webrtcbroadcaster":
-        await this.handleWebRTCMessage(msg);
-        break;
-    }
+  get everConnected(): boolean {
+    return this.hasConnected;
   }
 
-  /**
-   * Adds a viewer to the peer-to-peer connection.
-   *
-   * @param viewerId
-   * @private
-   */
-  private async addViewer(viewerId: string): Promise<void> {
-    const viewerConnection = new RTCPeerConnection(this.rtcConfig);
+  connect(): void {
+    const socket = new WebSocket(this.url);
+    this.socket = socket;
 
-    for (const track of await this.mediaStream.getTracks()) {
-      viewerConnection.addTrack(track, this.mediaStream);
-    }
-
-    viewerConnection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-      if (!event.candidate) return;
-
-      this.sendMessage({
-        type: "webrtcbroadcaster",
-        kind: "candidate",
-        viewerId: viewerId,
-        message: event.candidate,
-      });
+    socket.onopen = () => {
+      this.attempt = 0;
+      this.hasConnected = true;
+      hidePopup("websocket-connect-failed");
+      this.onopen?.();
     };
 
-    viewerConnection.onicegatheringstatechange = async (_event: Event) => {
-      if (viewerConnection.iceGatheringState !== "complete") {
+    socket.onerror = () => {
+      if (!this.hasConnected) {
+        showPopup("websocket-connect-failed");
+      }
+    };
+
+    socket.onmessage = (event: MessageEvent) => {
+      let message: unknown;
+
+      try {
+        message = JSON.parse(event.data);
+      } catch {
         return;
       }
 
-      for (const sender of await viewerConnection.getSenders()) {
-        if (sender.track == null) {
-          continue;
-        }
-
-        const rtcSendParameters = sender.getParameters();
-
-        // https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpSender/setParameters#currently_compatible_implementation
-        if (!rtcSendParameters.encodings) {
-          rtcSendParameters.encodings = [{}];
-        }
-
-        if (sender.track.kind === "audio") {
-          rtcSendParameters.encodings[0].maxBitrate = 960000; // 960 Kbps, does gek
-        } else if (sender.track.kind === "video") {
-          rtcSendParameters.encodings[0].maxFramerate = 30;
-          rtcSendParameters.encodings[0].maxBitrate = 100000000; // 100 Mbps
-        }
-
-        await sender.setParameters(rtcSendParameters);
+      if (typeof message === "object" && message !== null && "type" in message) {
+        this.onmessage?.(message as ServerMessage);
       }
     };
 
-    const offer = await viewerConnection.createOffer();
-    await viewerConnection.setLocalDescription(offer);
-    const localDescription = viewerConnection.localDescription;
+    socket.onclose = () => {
+      if (this.socket !== socket) {
+        return;
+      }
 
-    if (localDescription == null) {
-      throw "No local description available.";
-    }
+      this.socket = null;
+      this.onclose?.();
 
-    await this.sendMessage({
-      type: "webrtcbroadcaster",
-      kind: "offer",
-      viewerId: viewerId,
-      message: localDescription,
-    });
-
-    this.viewers[viewerId] = viewerConnection;
-
-    if (this.onviewerjoin != null) {
-      this.onviewerjoin(viewerId);
-    }
+      if (!this.closed) {
+        const delay = RECONNECT_DELAYS_MS[Math.min(this.attempt, RECONNECT_DELAYS_MS.length - 1)];
+        this.attempt++;
+        setTimeout(() => this.connect(), delay);
+      }
+    };
   }
 
   /**
-   * Removes a viewer from the peer-to-peer connection.
-   *
-   * @param viewerId
-   * @private
+   * Sends a message. Messages are dropped while disconnected, because the client resynchronizes from the next
+   * "roomstate" after it reconnects.
    */
-  private async removeViewer(viewerId: string): Promise<void> {
-    if (this.viewers[viewerId] == null) {
-      return;
-    }
-
-    this.viewers[viewerId].close();
-    delete this.viewers[viewerId];
-
-    if (this.onviewerleave != null) {
-      this.onviewerleave(viewerId);
+  send(message: ClientMessage): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
     }
   }
 
-  /**
-   * Handles incoming WebRTC messages.
-   *
-   * @param msg
-   * @private
-   */
-  private async handleWebRTCMessage(msg: MessageWebRTCBroadcaster): Promise<void> {
-    const kind = msg.kind;
-
-    switch (kind) {
-      case "candidate":
-        if (this.viewers[msg.viewerId] == null) {
-          break;
-        }
-
-        await this.viewers[msg.viewerId].addIceCandidate(new RTCIceCandidate(msg.message));
-        break;
-      case "answer":
-        if (this.viewers[msg.viewerId] == null) {
-          break;
-        }
-
-        await this.viewers[msg.viewerId].setRemoteDescription(msg.message);
-        break;
-    }
+  close(): void {
+    this.closed = true;
+    this.socket?.close();
   }
 }
 
 /**
- * Represents a viewer.
+ * Wraps an RTCPeerConnection and holds back ICE candidates until the remote description is set.
  */
-class Viewer implements Client {
-  private readonly sendMessage: MessageSender;
+class PeerLink {
+  public readonly connection: RTCPeerConnection;
+
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+  private hasRemoteDescription = false;
+
+  constructor(rtcConfig: RTCConfiguration) {
+    this.connection = new RTCPeerConnection(rtcConfig);
+  }
+
+  async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    await this.connection.setRemoteDescription(description);
+    this.hasRemoteDescription = true;
+
+    const candidates = this.pendingCandidates;
+    this.pendingCandidates = [];
+
+    for (const candidate of candidates) {
+      await this.connection.addIceCandidate(candidate);
+    }
+  }
+
+  async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    if (!this.hasRemoteDescription) {
+      this.pendingCandidates.push(candidate);
+      return;
+    }
+
+    await this.connection.addIceCandidate(candidate);
+  }
+
+  close(): void {
+    this.connection.close();
+  }
+}
+
+interface OutgoingPeer {
+  connectionId: string;
+  link: PeerLink;
+}
+
+/**
+ * The screen this client presents. It has one connection per recipient, keyed by participant ID and connection ID.
+ * Until the server accepts the presentation, it has no stream ID and no connections.
+ */
+class OutgoingStream {
+  public readonly mediaStream: MediaStream;
+
   private readonly rtcConfig: RTCConfiguration;
-  private readonly videoElement: HTMLVideoElement;
+  private readonly sendMessage: MessageSender;
+  private readonly peers = new Map<string, OutgoingPeer>();
+  private currentStreamId: string | null = null;
 
-  private broadcasterPeerConnection: RTCPeerConnection | null = null;
-
-  /**
-   * Viewer constructor.
-   *
-   * @param sendMessage Function to send a message to the server
-   * @param rtcConfig The WebRTC configuration to use for the WebRTC connection
-   * @param videoElement The element to project the received MediaStream onto
-   */
-  constructor(sendMessage: MessageSender, rtcConfig: RTCConfiguration, videoElement: HTMLVideoElement) {
-    this.sendMessage = sendMessage;
+  constructor(mediaStream: MediaStream, rtcConfig: RTCConfiguration, sendMessage: MessageSender) {
+    this.mediaStream = mediaStream;
     this.rtcConfig = rtcConfig;
-    this.videoElement = videoElement;
+    this.sendMessage = sendMessage;
   }
 
   /**
-   * @inheritDoc
+   * The stream ID assigned by the server, or null while awaiting approval
    */
-  async handleMessage(msg: MessageBroadcasterDisconnected | MessageWebRTCViewer): Promise<void> {
-    switch (msg.type) {
-      case "broadcasterdisconnected":
-        await this.handleBroadcasterDisconnect();
-        break;
-      case "webrtcviewer":
-        await this.handleWebRTCMessage(msg);
-        break;
+  get streamId(): string | null {
+    return this.currentStreamId;
+  }
+
+  /**
+   * Returns to awaiting approval. The capture keeps running.
+   */
+  reset(): void {
+    this.closePeers();
+    this.currentStreamId = null;
+  }
+
+  /**
+   * Adopts the stream ID from "presentaccepted". Connections are rebuilt on the next sync.
+   */
+  adopt(streamId: string): void {
+    this.closePeers();
+    this.currentStreamId = streamId;
+  }
+
+  /**
+   * Opens a connection to every other connected participant and closes the connections to participants that left or
+   * reconnected.
+   */
+  sync(participants: ParticipantState[], selfId: string): void {
+    const streamId = this.currentStreamId;
+
+    if (streamId == null) {
+      return;
+    }
+
+    const recipients = new Map<string, string>();
+
+    for (const participant of participants) {
+      if (participant.connected && participant.id !== selfId) {
+        recipients.set(participant.id, participant.connectionId);
+      }
+    }
+
+    for (const [participantId, peer] of this.peers) {
+      if (recipients.get(participantId) !== peer.connectionId) {
+        peer.link.close();
+        this.peers.delete(participantId);
+      }
+    }
+
+    for (const [participantId, connectionId] of recipients) {
+      if (!this.peers.has(participantId)) {
+        this.addPeer(participantId, connectionId, streamId);
+      }
     }
   }
 
-  /**
-   * Handles a disconnect of the broadcaster.
-   *
-   * @private
-   */
-  private async handleBroadcasterDisconnect(): Promise<void> {
-    showPopup("broadcaster-disconnected");
-    document.body.removeChild(this.videoElement);
-  }
+  async handleSignal(message: MessageSignalFromServer): Promise<void> {
+    if (message.streamId !== this.currentStreamId) {
+      return;
+    }
 
-  /**
-   * Handles incoming WebRTC messages.
-   *
-   * @param msg
-   * @private
-   */
-  private async handleWebRTCMessage(msg: MessageWebRTCViewer): Promise<void> {
-    const kind = msg.kind;
+    const peer = this.peers.get(message.from);
 
-    switch (kind) {
+    if (peer == null || peer.connectionId !== message.fromConnection) {
+      return;
+    }
+
+    switch (message.kind) {
+      case "answer":
+        await peer.link.setRemoteDescription(message.message);
+        break;
       case "candidate":
-        if (this.broadcasterPeerConnection == null) {
-          break;
-        }
-
-        await this.broadcasterPeerConnection.addIceCandidate(new RTCIceCandidate(msg.message));
-        break;
-      case "offer":
-        await this.handleOffer(msg);
+        await peer.link.addIceCandidate(message.message);
         break;
     }
   }
 
   /**
-   * Handles incoming WebRTC offer.
-   *
-   * @param msg
-   * @private
+   * Stops the capture and closes every connection.
    */
-  private async handleOffer(msg: Extract<MessageWebRTCViewer, { kind: "offer" | "answer" }>): Promise<void> {
-    this.broadcasterPeerConnection = new RTCPeerConnection(this.rtcConfig);
+  stop(): void {
+    this.closePeers();
+    this.currentStreamId = null;
 
-    this.broadcasterPeerConnection.ontrack = (event: RTCTrackEvent) => {
-      this.videoElement.srcObject = event.streams[0];
-    };
+    for (const track of this.mediaStream.getTracks()) {
+      track.stop();
+    }
+  }
 
-    this.broadcasterPeerConnection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate == null) return;
+  private closePeers(): void {
+    for (const peer of this.peers.values()) {
+      peer.link.close();
+    }
+
+    this.peers.clear();
+  }
+
+  private addPeer(participantId: string, connectionId: string, streamId: string): void {
+    const link = new PeerLink(this.rtcConfig);
+    const connection = link.connection;
+
+    this.peers.set(participantId, { connectionId, link });
+
+    for (const track of this.mediaStream.getTracks()) {
+      connection.addTrack(track, this.mediaStream);
+    }
+
+    connection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+      if (event.candidate == null) {
+        return;
+      }
 
       this.sendMessage({
-        type: "webrtcviewer",
+        type: "signal",
+        to: participantId,
+        toConnection: connectionId,
+        streamId,
         kind: "candidate",
-        message: event.candidate,
+        message: event.candidate.toJSON(),
       });
     };
 
-    await this.broadcasterPeerConnection.setRemoteDescription(msg.message);
+    connection.onicegatheringstatechange = () => {
+      if (connection.iceGatheringState === "complete") {
+        void applyEncodingParameters(connection);
+      }
+    };
 
-    const answer = await this.broadcasterPeerConnection.createAnswer();
-    await this.broadcasterPeerConnection.setLocalDescription(answer);
+    void this.sendOffer(link, participantId, connectionId, streamId);
+  }
 
-    const localDescription = this.broadcasterPeerConnection.localDescription;
-
-    if (localDescription == null) {
-      throw "No local description available.";
+  private async sendOffer(link: PeerLink, participantId: string, connectionId: string, streamId: string) {
+    try {
+      const offer = await link.connection.createOffer();
+      await link.connection.setLocalDescription(offer);
+    } catch (error) {
+      console.warn("Could not create an offer.", error);
+      return;
     }
 
-    await this.sendMessage({
-      type: "webrtcviewer",
-      kind: "answer",
-      message: localDescription,
+    const localDescription = link.connection.localDescription;
+
+    // The connection may have been replaced while the offer was created
+    if (localDescription == null || this.peers.get(participantId)?.link !== link) {
+      return;
+    }
+
+    this.sendMessage({
+      type: "signal",
+      to: participantId,
+      toConnection: connectionId,
+      streamId,
+      kind: "offer",
+      message: localDescription.toJSON(),
     });
   }
 }
 
-class Room {
-  private readonly roomId: string;
-  private readonly videoElement: HTMLVideoElement;
-  private readonly webSocket: WebSocket;
+/**
+ * A screen that another participant presents to this client.
+ */
+class IncomingStream {
+  public readonly streamId: string;
+  public readonly presenterId: string;
+  public readonly presenterConnection: string;
+  public mediaStream: MediaStream | null = null;
+  public onstream: (() => void) | null = null;
+
+  private readonly link: PeerLink;
   private readonly sendMessage: MessageSender;
-  private readonly rtcConfig: RTCConfiguration;
+
+  constructor(
+    streamId: string,
+    presenterId: string,
+    presenterConnection: string,
+    rtcConfig: RTCConfiguration,
+    sendMessage: MessageSender,
+  ) {
+    this.streamId = streamId;
+    this.presenterId = presenterId;
+    this.presenterConnection = presenterConnection;
+    this.sendMessage = sendMessage;
+    this.link = new PeerLink(rtcConfig);
+
+    this.link.connection.ontrack = (event: RTCTrackEvent) => {
+      this.mediaStream = event.streams[0] ?? new MediaStream([event.track]);
+      this.onstream?.();
+    };
+
+    this.link.connection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+      if (event.candidate == null) {
+        return;
+      }
+
+      this.sendMessage({
+        type: "signal",
+        to: presenterId,
+        toConnection: presenterConnection,
+        streamId,
+        kind: "candidate",
+        message: event.candidate.toJSON(),
+      });
+    };
+  }
 
   /**
-   * Room constructor.
-   *
-   * @param roomId The ID of this room
+   * Handles an offer or an ICE candidate. A later offer on the same connection renegotiates it.
    */
-  constructor(roomId: string) {
-    this.roomId = roomId;
-    this.videoElement = <HTMLVideoElement>document.getElementById("stream");
+  async handleSignal(message: MessageSignalFromServer): Promise<void> {
+    const connection = this.link.connection;
+
+    switch (message.kind) {
+      case "offer": {
+        await this.link.setRemoteDescription(message.message);
+        const answer = await connection.createAnswer();
+        await connection.setLocalDescription(answer);
+
+        const localDescription = connection.localDescription;
+
+        if (localDescription == null) {
+          return;
+        }
+
+        this.sendMessage({
+          type: "signal",
+          to: this.presenterId,
+          toConnection: this.presenterConnection,
+          streamId: this.streamId,
+          kind: "answer",
+          message: localDescription.toJSON(),
+        });
+        break;
+      }
+      case "candidate":
+        await this.link.addIceCandidate(message.message);
+        break;
+    }
+  }
+
+  close(): void {
+    this.link.close();
+  }
+}
+
+/**
+ * The page elements. Every translation file has the same element IDs.
+ */
+class Ui {
+  public onpresent: (() => void) | null = null;
+  public onstop: (() => void) | null = null;
+  public onconfirm: ((name: string) => void) | null = null;
+  public oncancel: (() => void) | null = null;
+
+  public readonly video: HTMLVideoElement;
+
+  private readonly toolbar: HTMLElement;
+  private readonly presentButton: HTMLButtonElement;
+  private readonly stopButton: HTMLButtonElement;
+  private readonly viewerCount: HTMLElement;
+  private readonly viewerCountValue: HTMLElement;
+  private readonly status: HTMLElement;
+  private readonly dialog: HTMLDialogElement;
+  private readonly nameInput: HTMLInputElement;
+  private readonly anonymousName: string;
+  private readonly noticeTimers = new Map<NoticeId, number>();
+
+  constructor() {
+    this.video = getElement("stream", HTMLVideoElement);
+    this.toolbar = getElement("toolbar", HTMLElement);
+    this.presentButton = getElement("present-button", HTMLButtonElement);
+    this.stopButton = getElement("stop-button", HTMLButtonElement);
+    this.viewerCount = getElement("viewer-count", HTMLElement);
+    this.viewerCountValue = getElement("viewer-count-value", HTMLElement);
+    this.status = getElement("status", HTMLElement);
+    this.dialog = getElement("present-dialog", HTMLDialogElement);
+    this.nameInput = getElement("present-name", HTMLInputElement);
+    this.anonymousName = getElement("text-anonymous", HTMLElement).textContent.trim();
+
+    this.presentButton.addEventListener("click", () => this.onpresent?.());
+    this.stopButton.addEventListener("click", () => this.onstop?.());
+
+    // The confirm handler must run synchronously in the submit event, so that getDisplayMedia still has the user
+    // activation of the click
+    getElement("present-form", HTMLFormElement).addEventListener("submit", (event: SubmitEvent) => {
+      event.preventDefault();
+      const name = this.nameInput.value.trim();
+      this.dialog.close();
+      this.onconfirm?.(name);
+    });
+
+    getElement("present-cancel", HTMLButtonElement).addEventListener("click", () => {
+      this.dialog.close();
+      this.oncancel?.();
+    });
+
+    this.dialog.addEventListener("cancel", (event: Event) => {
+      event.preventDefault();
+      this.dialog.close();
+      this.oncancel?.();
+    });
+
+    for (const notice of document.querySelectorAll<HTMLElement>(".notice")) {
+      notice.querySelector(".notice-close")?.addEventListener("click", () => this.hideNotice(notice.id as NoticeId));
+    }
+
+    this.video.onpause = () => {
+      if (this.video.srcObject != null) {
+        this.video.play().catch(() => {});
+      }
+    };
+  }
+
+  /**
+   * Returns the name to display for a participant.
+   */
+  displayName(name: string | undefined): string {
+    return name != null && name !== "" ? name : this.anonymousName;
+  }
+
+  setVideo(stream: MediaStream | null, isLocal: boolean): void {
+    if (isLocal) {
+      // Never play back the presenter's own audio
+      this.video.muted = true;
+    }
+
+    if (this.video.srcObject !== stream) {
+      this.video.srcObject = stream;
+    }
+  }
+
+  /**
+   * @param countdown The time left, shown in the ".countdown" of the status, or null to hide it
+   */
+  showStatus(id: StatusId | null, name = "", countdown: string | null = null): void {
+    for (const statusId of STATUS_IDS) {
+      const element = document.getElementById(statusId);
+
+      if (element == null) {
+        continue;
+      }
+
+      element.classList.toggle("hidden", statusId !== id);
+
+      if (statusId === id) {
+        setNameSlots(element, name);
+
+        for (const countdownElement of element.querySelectorAll(".countdown")) {
+          countdownElement.classList.toggle("hidden", countdown == null);
+        }
+
+        for (const slot of element.querySelectorAll(".countdown-slot")) {
+          slot.textContent = countdown ?? "";
+        }
+      }
+    }
+
+    this.status.classList.toggle("hidden", id == null);
+  }
+
+  showToolbar(options: { visible: boolean; canPresent: boolean; presenting: boolean; viewers: number }): void {
+    this.toolbar.classList.toggle("hidden", !options.visible);
+    this.presentButton.classList.toggle("hidden", !options.canPresent);
+    this.stopButton.classList.toggle("hidden", !options.presenting);
+    this.viewerCount.classList.toggle("hidden", !options.presenting);
+    this.viewerCountValue.textContent = options.viewers.toString();
+  }
+
+  showNotice(id: NoticeId, name = ""): void {
+    const element = document.getElementById(id);
+
+    if (element == null) {
+      return;
+    }
+
+    setNameSlots(element, name);
+    element.classList.remove("hidden");
+
+    window.clearTimeout(this.noticeTimers.get(id));
+    this.noticeTimers.set(
+      id,
+      window.setTimeout(() => this.hideNotice(id), NOTICE_TIMEOUT_MS),
+    );
+  }
+
+  hideNotice(id: NoticeId): void {
+    window.clearTimeout(this.noticeTimers.get(id));
+    this.noticeTimers.delete(id);
+    document.getElementById(id)?.classList.add("hidden");
+  }
+
+  /**
+   * Opens the dialog that starts or resumes presenting.
+   *
+   * @param mode "start" to start presenting, "resume" to resume after a reload
+   * @param presenterName The name of the current presenter, who would be taken over, or null
+   * @param name The name to fill in
+   */
+  openDialog(mode: DialogMode, presenterName: string | null, name: string): void {
+    for (const element of this.dialog.querySelectorAll<HTMLElement>("[data-mode]")) {
+      element.classList.toggle("hidden", element.dataset.mode !== mode);
+    }
+
+    const warning = getElement("present-takeover-warning", HTMLElement);
+    warning.classList.toggle("hidden", presenterName == null);
+    setNameSlots(warning, presenterName ?? "");
+
+    this.nameInput.value = name;
+
+    if (!this.dialog.open) {
+      this.dialog.showModal();
+    }
+  }
+
+  closeDialog(): void {
+    this.dialog.close();
+  }
+}
+
+/**
+ * Keeps this client in sync with the room: presents the local screen, receives the screens of others, and shows the
+ * state of the room.
+ */
+class RoomController {
+  private readonly roomId: string;
+  private readonly ui: Ui;
+  private readonly signaling: SignalingConnection;
+  private readonly rtcConfig: RTCConfiguration;
+  private readonly canPresent: boolean;
+  private readonly sendMessage: MessageSender;
+
+  private selfId: string | null = null;
+  private state: MessageRoomState | null = null;
+  private outgoing: OutgoingStream | null = null;
+  private readonly incoming = new Map<string, IncomingStream>();
+
+  /**
+   * Set by "welcome" while presenting: the next "roomstate" decides whether this client still holds its seat.
+   */
+  private resolveOnNextState = false;
+
+  /**
+   * Whether to open the start dialog when the room state first arrives, for the person who created the room
+   */
+  private offerToPresent: boolean;
+
+  private dialogMode: DialogMode | null = null;
+  private lastShownStreamId: string | null = null;
+
+  /**
+   * When the grace period of each reconnecting presenter ends, by participant ID, in performance.now() time. The
+   * server sends the time left, so that the clocks of the server and the client do not need to agree.
+   */
+  private graceDeadlines = new Map<string, number>();
+
+  /**
+   * Re-renders every second while a countdown is shown
+   */
+  private countdownTimer: number | null = null;
+
+  /**
+   * @param roomId The ID of the room, as typed in the URL hash
+   * @param isCreator Whether this client created the room by opening the page without a hash
+   */
+  constructor(roomId: string, isCreator: boolean) {
+    this.roomId = roomId.toLowerCase();
+    this.offerToPresent = isCreator;
+    this.canPresent = "getDisplayMedia" in navigator.mediaDevices;
+    this.ui = new Ui();
 
     const webSocketProtocol = window.location.protocol === "http:" ? "ws" : "wss";
-    const webSocketUrl = `${webSocketProtocol}://${location.host}${location.pathname}`;
+    this.signaling = new SignalingConnection(`${webSocketProtocol}://${location.host}${location.pathname}`);
+    this.sendMessage = (message: ClientMessage) => this.signaling.send(message);
 
-    this.webSocket = new WebSocket(webSocketUrl);
-    this.webSocket.onerror = () => showPopup("websocket-connect-failed");
-
-    this.sendMessage = async (message: Message) => this.webSocket.send(JSON.stringify(message));
     this.rtcConfig = {
       iceServers: [
         { urls: `stun:${location.hostname}` },
@@ -453,131 +951,474 @@ class Room {
           credential: "screensy",
         },
       ],
-      iceCandidatePoolSize: 8,
     };
 
-    this.videoElement.onpause = (_event: Event) => this.videoElement.play();
-    window.onunload = window.onbeforeunload = () => this.webSocket.close();
-  }
+    this.signaling.onopen = () => this.join();
+    this.signaling.onclose = () => this.render();
+    this.signaling.onmessage = (message: ServerMessage) => this.handleMessage(message);
 
-  /**
-   * Joins the room.
-   */
-  async join() {
-    // Wait until the socket opens
-    await wait(this.webSocket, "open");
+    this.ui.onpresent = () => this.openStartDialog();
+    this.ui.onstop = () => this.stopPresenting();
+    this.ui.onconfirm = (name: string) => this.confirmDialog(name);
+    this.ui.oncancel = () => this.cancelDialog();
 
-    this.webSocket.onmessage = async (event: MessageEvent) => {
-      const messageData = JSON.parse(event.data);
-      const isBroadcaster = messageData.type === "broadcast";
-
-      if (isBroadcaster && !("getDisplayMedia" in navigator.mediaDevices)) {
-        showPopup("screensharing-not-supported");
-        return;
-      }
-
-      const client = isBroadcaster ? await this.setupBroadcaster() : await this.setupViewer();
-
-      this.webSocket.onmessage = (event: MessageEvent) => client.handleMessage(JSON.parse(event.data));
-
-      if (isBroadcaster) {
-        await this.sendMessage({ type: "requestviewers" });
-      }
-
-      this.setDocumentTitle();
-    };
-
-    await this.sendMessage({
-      type: "join",
-      roomId: this.roomId.toLowerCase(),
-    });
-  }
-
-  /**
-   * Sets the document's title to the room name.
-   */
-  private setDocumentTitle() {
-    const roomIdWords = this.roomId.split(/(?=[A-Z])/);
+    const roomIdWords = roomId.split(/(?=[A-Z])/);
     document.title = `${roomIdWords.join(" ")} | screensy`;
   }
 
-  /**
-   * Set up a Broadcaster instance.
-   */
-  private async setupBroadcaster(): Promise<Broadcaster> {
-    const mediaStream = await this.getDisplayMediaStream();
-    const broadcaster = new Broadcaster(this.sendMessage, this.rtcConfig, mediaStream);
-    const counterElement: HTMLParagraphElement = document.createElement("p");
+  start(): void {
+    this.render();
+    this.signaling.connect();
+  }
 
-    counterElement.id = "counter";
-    counterElement.textContent = "0";
+  close(): void {
+    this.signaling.close();
+  }
 
-    broadcaster.onviewerjoin = (_viewerId: string) => {
-      const currentCounter = Number.parseInt(counterElement.textContent, 10);
-      counterElement.textContent = (currentCounter + 1).toString();
-    };
+  private get resumeStorageKey(): string {
+    return RESUME_STORAGE_PREFIX + this.roomId;
+  }
 
-    broadcaster.onviewerleave = (_viewerId: string) => {
-      const currentCounter = Number.parseInt(counterElement.textContent, 10);
-      counterElement.textContent = (currentCounter - 1).toString();
-    };
+  private join(): void {
+    const resumeToken = readStorage(getSessionStorage, this.resumeStorageKey);
 
-    document.body.prepend(counterElement);
-    this.videoElement.srcObject = mediaStream;
+    this.sendMessage({
+      type: "join",
+      roomId: this.roomId,
+      name: readStorage(getLocalStorage, NAME_STORAGE_KEY) ?? "",
+      ...(resumeToken == null ? {} : { resumeToken }),
+    });
+  }
 
-    return broadcaster;
+  private handleMessage(message: ServerMessage): void {
+    switch (message.type) {
+      case "welcome":
+        this.handleWelcome(message);
+        break;
+      case "roomstate":
+        this.handleRoomState(message);
+        break;
+      case "signal":
+        this.handleSignal(message);
+        break;
+      case "presentaccepted":
+        if (this.outgoing != null && this.outgoing.streamId == null && !this.resolveOnNextState) {
+          this.outgoing.adopt(message.streamId);
+        }
+        break;
+      case "presentrejected":
+        if (this.outgoing != null) {
+          this.loseSeat();
+        }
+        break;
+      case "replaced":
+        // Another tab uses this participant. Join as a new participant when the server closes this socket.
+        writeStorage(getSessionStorage, this.resumeStorageKey, null);
+        this.handleReplaced();
+        break;
+    }
   }
 
   /**
-   * Set up a Viewer instance.
+   * The seat, if this client had one, now belongs to the other tab, for example a duplicate of this one. Stop here
+   * instead of waiting for the next room state, which would report the seat as taken over by this same person.
    */
-  private async setupViewer(): Promise<Viewer> {
-    // The client is assigned the role of viewer
-    return new Viewer(this.sendMessage, this.rtcConfig, this.videoElement);
+  private handleReplaced(): void {
+    const hadSeat = this.outgoing != null || this.dialogMode === "resume";
+
+    this.outgoing?.stop();
+    this.outgoing = null;
+    this.resolveOnNextState = false;
+
+    if (this.dialogMode === "resume") {
+      this.dialogMode = null;
+      this.ui.closeDialog();
+    }
+
+    if (hadSeat) {
+      this.ui.showNotice("notice-moved-to-other-tab");
+    }
+
+    this.render();
+  }
+
+  private handleWelcome(message: MessageWelcome): void {
+    this.selfId = message.selfId;
+    writeStorage(getSessionStorage, this.resumeStorageKey, message.resumeToken);
+
+    // The connection ID changed, so every presenter opens new connections to this client
+    this.closeIncoming();
+
+    if (this.outgoing != null) {
+      // A "present" may have been lost with the old socket. The next room state tells whether the seat is still ours.
+      this.outgoing.reset();
+      this.resolveOnNextState = true;
+    }
+  }
+
+  private handleRoomState(state: MessageRoomState): void {
+    this.state = state;
+
+    const now = performance.now();
+    this.graceDeadlines = new Map(
+      state.presenters.flatMap((presenter) =>
+        presenter.graceRemainingMs == null ? [] : [[presenter.participantId, now + presenter.graceRemainingMs]],
+      ),
+    );
+
+    const selfId = this.selfId;
+
+    if (selfId == null) {
+      return;
+    }
+
+    const ownSeat = state.presenters.find((presenter) => presenter.participantId === selfId);
+
+    if (this.outgoing != null) {
+      if (this.outgoing.streamId == null) {
+        if (this.resolveOnNextState) {
+          this.resolveOnNextState = false;
+
+          if (ownSeat == null) {
+            this.loseSeat();
+          } else {
+            this.sendMessage({ type: "present", resume: true });
+          }
+        }
+        // Otherwise the "present" is still on its way, and this state may predate it
+      } else if (ownSeat == null) {
+        this.loseSeat();
+      } else if (ownSeat.status === "reconnecting") {
+        this.outgoing.reset();
+        this.sendMessage({ type: "present", resume: true });
+      } else if (ownSeat.streamId === this.outgoing.streamId) {
+        this.outgoing.sync(state.participants, selfId);
+      }
+    } else if (ownSeat != null) {
+      if (ownSeat.status === "live") {
+        // The seat has no capture behind it
+        this.sendMessage({ type: "stoppresenting" });
+      } else if (this.dialogMode !== "resume") {
+        // This client reloaded while presenting
+        this.dialogMode = "resume";
+        this.ui.openDialog("resume", null, this.storedName());
+      }
+    } else if (this.dialogMode === "resume") {
+      // The seat expired or was taken while the resume dialog was open
+      this.dialogMode = null;
+      this.ui.closeDialog();
+      this.showSeatLostNotice();
+    }
+
+    for (const [streamId, stream] of this.incoming) {
+      const presenter = state.presenters.find((presenter) => presenter.streamId === streamId);
+      const participant = state.participants.find((participant) => participant.id === stream.presenterId);
+
+      if (
+        presenter == null ||
+        presenter.status !== "live" ||
+        presenter.participantId !== stream.presenterId ||
+        participant?.connectionId !== stream.presenterConnection
+      ) {
+        stream.close();
+        this.incoming.delete(streamId);
+      }
+    }
+
+    if (this.offerToPresent) {
+      this.offerToPresent = false;
+
+      if (this.outgoing == null && ownSeat == null) {
+        if (this.canPresent) {
+          this.openStartDialog();
+        } else {
+          showPopup("screensharing-not-supported");
+        }
+      }
+    }
+
+    this.render();
+  }
+
+  private handleSignal(message: MessageSignalFromServer): void {
+    if (this.outgoing != null && message.streamId === this.outgoing.streamId) {
+      this.outgoing.handleSignal(message).catch((error) => console.warn("Could not handle a signal.", error));
+      return;
+    }
+
+    const state = this.state;
+
+    if (state == null) {
+      return;
+    }
+
+    const presenter = state.presenters.find(
+      (presenter) =>
+        presenter.streamId === message.streamId &&
+        presenter.participantId === message.from &&
+        presenter.status === "live",
+    );
+    const participant = state.participants.find((participant) => participant.id === message.from);
+
+    if (presenter == null || participant?.connectionId !== message.fromConnection) {
+      // A signal of an old stream or an old connection
+      return;
+    }
+
+    let stream = this.incoming.get(message.streamId);
+
+    if (stream == null) {
+      stream = new IncomingStream(
+        message.streamId,
+        message.from,
+        message.fromConnection,
+        this.rtcConfig,
+        this.sendMessage,
+      );
+      stream.onstream = () => this.render();
+      this.incoming.set(message.streamId, stream);
+    }
+
+    stream.handleSignal(message).catch((error) => console.warn("Could not handle a signal.", error));
+  }
+
+  private openStartDialog(): void {
+    if (this.outgoing != null || !this.canPresent) {
+      return;
+    }
+
+    const presenter = this.state?.presenters.find((presenter) => presenter.participantId !== this.selfId);
+    const presenterName = presenter == null ? null : this.nameOf(presenter.participantId);
+
+    this.dialogMode = "start";
+    this.ui.openDialog("start", presenterName, this.storedName());
+    this.render();
+  }
+
+  private confirmDialog(name: string): void {
+    const mode = this.dialogMode;
+    this.dialogMode = null;
+
+    // Call getDisplayMedia before anything else, while the click still counts as a user activation
+    let capture: Promise<MediaStream>;
+
+    try {
+      capture = navigator.mediaDevices.getDisplayMedia(DISPLAY_MEDIA_OPTIONS);
+    } catch (error) {
+      capture = Promise.reject(error);
+    }
+
+    writeStorage(getLocalStorage, NAME_STORAGE_KEY, name);
+    this.render();
+
+    capture.then(
+      (mediaStream: MediaStream) => this.beginPresenting(mediaStream, name, mode === "resume"),
+      () => {
+        this.ui.showNotice("notice-access-denied");
+
+        if (mode === "resume") {
+          this.sendMessage({ type: "stoppresenting" });
+        }
+
+        this.render();
+      },
+    );
+  }
+
+  private cancelDialog(): void {
+    if (this.dialogMode === "resume") {
+      this.sendMessage({ type: "stoppresenting" });
+    }
+
+    this.dialogMode = null;
+    this.render();
+  }
+
+  private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean): void {
+    this.outgoing?.stop();
+
+    const outgoing = new OutgoingStream(mediaStream, this.rtcConfig, this.sendMessage);
+    this.outgoing = outgoing;
+
+    // The browser's own "Stop sharing" button ends the track
+    for (const track of mediaStream.getVideoTracks()) {
+      track.addEventListener("ended", () => {
+        if (this.outgoing === outgoing) {
+          this.stopPresenting();
+        }
+      });
+    }
+
+    const self = this.state?.participants.find((participant) => participant.id === this.selfId);
+
+    if (self?.name !== name) {
+      this.sendMessage({ type: "setname", name });
+    }
+
+    // If the socket is down, this message is lost, and the next "welcome" resolves it
+    this.sendMessage({ type: "present", resume });
+    this.render();
+  }
+
+  private stopPresenting(): void {
+    if (this.outgoing == null) {
+      return;
+    }
+
+    this.sendMessage({ type: "stoppresenting" });
+    this.outgoing.stop();
+    this.outgoing = null;
+    this.render();
   }
 
   /**
-   * Returns the user's display MediaStream.
-   *
-   * @private
+   * Stops the capture after the seat was taken over or lost.
    */
-  private async getDisplayMediaStream(): Promise<MediaStream> {
-    showPopup("click-to-share");
+  private loseSeat(): void {
+    this.outgoing?.stop();
+    this.outgoing = null;
+    this.showSeatLostNotice();
+    this.render();
+  }
 
-    await wait(document, "click");
+  private showSeatLostNotice(): void {
+    const presenter = this.state?.presenters.find((presenter) => presenter.participantId !== this.selfId);
 
-    const videoConstraints: MediaTrackConstraints | boolean = true;
-    const audioConstraints: MediaTrackConstraints | boolean = {
-      channelCount: { ideal: 2 },
-      sampleRate: { ideal: 192000 },
-      noiseSuppression: { ideal: false },
-      echoCancellation: { ideal: false },
-      autoGainControl: { ideal: false },
-    };
+    if (presenter == null) {
+      this.ui.showNotice("notice-connection-lost");
+    } else {
+      this.ui.showNotice("notice-taken-over", this.nameOf(presenter.participantId));
+    }
+  }
 
-    const mediaConstraints: MediaStreamConstraints = {
-      video: videoConstraints,
-      audio: audioConstraints,
-    };
+  private closeIncoming(): void {
+    for (const stream of this.incoming.values()) {
+      stream.close();
+    }
 
-    const mediaDevices: MediaDevices = window.navigator.mediaDevices;
+    this.incoming.clear();
+  }
 
-    const displayMedia = mediaDevices.getDisplayMedia(mediaConstraints);
+  private storedName(): string {
+    return readStorage(getLocalStorage, NAME_STORAGE_KEY) ?? "";
+  }
 
-    // If the promise is resolved, remove the popup from the screen
-    displayMedia.then(() => {
-      hidePopup("click-to-share");
+  private nameOf(participantId: string): string {
+    const participant = this.state?.participants.find((participant) => participant.id === participantId);
+    return this.ui.displayName(participant?.name);
+  }
+
+  /**
+   * Updates the video, the status and the toolbar from the current state.
+   */
+  private render(): void {
+    const state = this.state;
+    const ready = this.signaling.isOpen && state != null && this.selfId != null;
+
+    let status: StatusId | null = null;
+    let statusName = "";
+    let countdown: string | null = null;
+    let video: MediaStream | null = null;
+
+    if (this.outgoing != null) {
+      video = this.outgoing.mediaStream;
+    }
+
+    if (!this.signaling.everConnected) {
+      status = "status-connecting";
+    } else if (!this.signaling.isOpen) {
+      status = "status-server-reconnecting";
+    } else if (state == null) {
+      status = "status-connecting";
+    } else if (this.outgoing == null) {
+      const presenter = state.presenters.find((presenter) => presenter.participantId !== this.selfId);
+
+      if (presenter == null) {
+        status = "status-waiting";
+      } else {
+        statusName = this.nameOf(presenter.participantId);
+
+        const stream = this.incoming.get(presenter.streamId);
+
+        if (presenter.status === "reconnecting") {
+          const participant = state.participants.find((participant) => participant.id === presenter.participantId);
+          const deadline = this.graceDeadlines.get(presenter.participantId);
+
+          if (participant?.connected) {
+            // Back after a reload, choosing the screen again
+            status = "status-presenter-resuming";
+          } else {
+            status = presenter.disconnectReason === "lost" ? "status-presenter-lost" : "status-presenter-left";
+            countdown = deadline == null ? null : formatCountdown(deadline - performance.now());
+          }
+        } else if (stream?.mediaStream != null) {
+          video = stream.mediaStream;
+          this.lastShownStreamId = presenter.streamId;
+        } else if (this.lastShownStreamId != null && this.lastShownStreamId !== presenter.streamId) {
+          status = "status-switching";
+        } else {
+          status = "status-joining";
+        }
+      }
+    }
+
+    this.ui.setVideo(video, this.outgoing != null);
+    this.ui.showStatus(status, statusName, countdown);
+
+    if (countdown != null && this.countdownTimer == null) {
+      this.countdownTimer = window.setInterval(() => this.render(), 1000);
+    } else if (countdown == null && this.countdownTimer != null) {
+      window.clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+
+    const viewers =
+      state?.participants.filter((participant) => participant.connected && participant.id !== this.selfId).length ?? 0;
+
+    this.ui.showToolbar({
+      visible: ready || this.outgoing != null,
+      canPresent: ready && this.canPresent && this.outgoing == null && this.dialogMode == null,
+      presenting: this.outgoing != null,
+      viewers,
     });
-
-    // If the promise is rejected, tell the user about the failure
-    displayMedia.catch(() => {
-      hidePopup("click-to-share");
-      showPopup("access-denied");
-    });
-
-    return displayMedia;
   }
 }
+
+async function main(_event: Event) {
+  let isCreator = false;
+
+  if (window.location.hash === "" || window.location.hash === "#") {
+    // Put the user in a new room. replaceState does not fire "hashchange", so the page does not reload.
+    history.replaceState(null, "", `#${generateRoomName()}`);
+    isCreator = true;
+  }
+
+  // If the user manually changes the hash, force a reload
+  window.onhashchange = (_event: Event) => {
+    location.reload();
+  };
+
+  if (!("WebSocket" in window)) {
+    showPopup("websockets-not-supported");
+    return;
+  }
+
+  if (!("mediaDevices" in navigator)) {
+    showPopup("mediastream-not-supported");
+    return;
+  }
+
+  if (!("RTCPeerConnection" in window)) {
+    showPopup("webrtc-not-supported");
+    return;
+  }
+
+  const controller = new RoomController(window.location.hash.substring(1), isCreator);
+  window.addEventListener("beforeunload", () => controller.close());
+  controller.start();
+}
+
+window.addEventListener("DOMContentLoaded", main);
 
 /**
  * Generates a random readable room name and returns the words as a string array.
@@ -762,35 +1603,3 @@ function generateRoomName(): string {
   // @see https://flaviocopes.com/how-to-uppercase-first-letter-javascript/
   return words.map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join("");
 }
-
-async function main(_event: Event) {
-  if (window.location.hash === "") {
-    // Redirect the user to a room
-    window.location.replace(`#${generateRoomName()}`);
-  }
-
-  // If the user manually changes the hash, force a reload
-  window.onhashchange = (_event: Event) => {
-    location.reload();
-  };
-
-  if (!("WebSocket" in window)) {
-    showPopup("websockets-not-supported");
-    return;
-  }
-
-  if (!("mediaDevices" in navigator)) {
-    showPopup("mediastream-not-supported");
-    return;
-  }
-
-  if (!("RTCPeerConnection" in window)) {
-    showPopup("webrtc-not-supported");
-    return;
-  }
-
-  const room = new Room(window.location.hash.substring(1));
-  await room.join();
-}
-
-window.addEventListener("DOMContentLoaded", main);
