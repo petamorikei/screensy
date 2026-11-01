@@ -245,6 +245,12 @@
                     ×
                 </button>
             </div>
+            <div id="notice-full" class="notice hidden" role="status">
+                <p>The room is full of presenters now. Try again.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
             <div id="notice-access-denied" class="notice hidden" role="status">
                 <p>
                     Could not access your screen. If your browser did not ask
@@ -263,10 +269,13 @@
                     You were presenting before the page reloaded. Choose your
                     screen again to continue.
                 </p>
-                <p id="present-takeover-warning" class="hidden">
-                    <span class="name-slot"></span> is presenting. Starting will
-                    take over from them.
-                </p>
+                <fieldset id="present-replace" class="hidden">
+                    <legend>
+                        Up to <span class="max-slot"></span> people can present at once.
+                        Choose whom to take over from.
+                    </legend>
+                    <div id="present-replace-options"></div>
+                </fieldset>
                 <label for="present-name">Your name</label>
                 <input
                     id="present-name"

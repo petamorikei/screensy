@@ -10,9 +10,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 ### Added
 
 -   Anyone in a room can start presenting at any time with the "Present"
-    button. If someone else is presenting, a confirmation dialog appears, and
-    the new presenter takes over. The room no longer closes when the presenter
-    leaves.
+    button. When the room is full of presenters, the start dialog asks whom to
+    take over from. The room no longer closes when the presenter leaves.
 -   Presenters enter a display name, which the browser remembers for the next
     time. Status messages and notices show the presenter's name, for example
     when someone takes over.
