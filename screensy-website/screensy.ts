@@ -463,9 +463,8 @@ interface OutgoingPeer {
 }
 
 /**
- * A screen capture and the tracks sent from it. The video is sent as a clone, so that hiding it turns only what the
- * viewers get black, and the preview keeps showing the capture. The audio is never played back locally, so its own
- * track is sent.
+ * A screen capture and the tracks sent from it. The preview shows the same tracks, so that the presenter sees exactly
+ * what the viewers get, including the black screen while hidden.
  */
 interface Capture {
   stream: MediaStream;
@@ -476,7 +475,7 @@ interface Capture {
 function prepareCapture(stream: MediaStream, hidden: boolean): Capture {
   const capture: Capture = {
     stream,
-    sendVideo: stream.getVideoTracks()[0]?.clone() ?? null,
+    sendVideo: stream.getVideoTracks()[0] ?? null,
     sendAudio: stream.getAudioTracks()[0] ?? null,
   };
 
@@ -498,8 +497,6 @@ function stopCapture(capture: Capture): void {
   for (const track of capture.stream.getTracks()) {
     track.stop();
   }
-
-  capture.sendVideo?.stop();
 }
 
 /**
@@ -560,7 +557,7 @@ class OutgoingStream {
   }
 
   /**
-   * Turns what the viewers get black and silent, or shows the screen again. The connections stay open.
+   * Turns the screen black and silent for the viewers and in the preview, or shows it again. The connections stay open.
    */
   setHidden(hidden: boolean): void {
     this.isHidden = hidden;

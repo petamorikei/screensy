@@ -20,9 +20,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     "Stop sharing" control ends the capture.
 -   A "Switch screen" button lets the presenter choose another screen,
     window or tab without interrupting the viewers.
--   A "Hide screen" button turns the presentation black and silent for the
-    viewers, who see that the presenter has hidden their screen. The presenter
-    still sees their own screen.
+-   A "Hide screen" button turns the presentation black and silent, for the
+    viewers and in the presenter's own preview alike. Viewers see that the
+    presenter has hidden their screen.
 -   Viewers see the state of the room: waiting for a presenter, connecting,
     and switching to a new presenter. When the presenter is away, viewers see
     whether they left the page, lost their connection or are resuming, with

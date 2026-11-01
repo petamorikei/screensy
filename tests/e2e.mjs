@@ -352,7 +352,27 @@ async function step(name, fn) {
   }
 }
 
+function isPortInUse(port) {
+  return new Promise((resolve) => {
+    const probe = net.connect(port, "localhost");
+    probe.on("connect", () => {
+      probe.destroy();
+      resolve(true);
+    });
+    probe.on("error", () => resolve(false));
+  });
+}
+
 async function main() {
+  // Other servers on these ports would get the checks instead, with other timers
+  const busy = [];
+  for (const port of [4000, 8080, PROXY_PORT, CDP_PORT]) {
+    if (await isPortInUse(port)) busy.push(port);
+  }
+  if (busy.length > 0) {
+    throw new Error(`Ports in use: ${busy.join(", ")}. Stop the servers that use them and try again.`);
+  }
+
   // Build the website first: "go run" would start it as a child process that cleanup() could not kill
   const website = join(mkdtempSync(join(tmpdir(), "screensy-website-")), "screensy-website");
   execFileSync("go", ["build", "-o", website, "."], { cwd: join(REPO, "screensy-website"), stdio: "inherit" });
@@ -686,14 +706,14 @@ async function main() {
     await waitColor(b, "B still sees red", isRed);
   });
 
-  await step("hiding the screen: black and silent for viewers, visible for the presenter", async () => {
+  await step("hiding the screen: black and silent for the viewers and in the presenter's preview", async () => {
     await a.click("#hide-button");
     const sb = await b.waitFor("B sees hidden", (s) => s.status === "status-presenter-hidden");
     assert.equal(sb.statusText, "Aliceさんが画面を一時的に隠しています。");
     await waitColor(b, "B sees black", isBlack);
     const sa = await a.waitFor("A sees self hidden", (s) => s.status === "status-self-hidden");
     assert.ok(sa.toolbar.includes("show-button") && !sa.toolbar.includes("hide-button"));
-    await waitColor(a, "A's preview stays red", isRed);
+    await waitColor(a, "A's preview is black too", isBlack);
     assert.equal(await a.eval(`${openSenders("video")}.every((s) => !s.track.enabled)`), true);
     await b.shot("13-presenter-hidden-ja");
     await a.shot("14-self-hidden-en");
@@ -708,6 +728,7 @@ async function main() {
     await a.eval("window.__replaced = []");
     await switchTo(a, { width: 640, height: 480, color: "rgb(0, 0, 255)", audio: true });
     await a.waitFor("A shows the blue capture", (s) => s.videoLocal && s.captureLive);
+    await waitColor(a, "A's preview of the new capture is black", isBlack);
     const replaced = await a.eval("window.__replaced.filter((r) => r.kind != null)");
     assert.equal(replaced.length, 4, "video and audio for B and C");
     assert.ok(

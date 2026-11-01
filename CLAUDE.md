@@ -75,7 +75,7 @@ The server pings every client every 15 s and terminates those that did not answe
 - `SignalingConnection` reconnects with backoff and drops messages while disconnected. After a reconnect, `welcome` and the next `roomstate` resynchronize everything.
 - `OutgoingStream` is this client's presentation: one `RTCPeerConnection` per recipient. It has no `streamId` while awaiting `presentaccepted`. Losing the own entry in `presenters` means the seat was taken over.
   - Every connection has exactly one video and one audio transceiver (`sendonly`), even for a capture without audio, so that switching the screen (`replaceCapture`) and hiding it (`setHidden`) never renegotiate.
-  - The video is sent as a `clone()` of the captured track. Hiding disables the clone and the audio track, so viewers get black frames and silence while the presenter's preview keeps the capture. A switch disables the new tracks before any `replaceTrack` when hidden, and rolls every connection back to the current capture if one of them rejects the new tracks.
+  - The captured tracks are sent as they are, and the preview shows the same tracks. Hiding disables them, so the viewers get black frames and silence, and the presenter's preview turns black too: both sides see the same. A switch disables the new tracks before any `replaceTrack` when hidden, and rolls every connection back to the current capture if one of them rejects the new tracks.
 - `IncomingStream` is one received stream per `streamId`. `PeerLink` holds back ICE candidates until the remote description is set.
 - `Ui` wraps the elements. The start/resume dialog and the "Switch screen" button must call `getDisplayMedia` synchronously in their handlers, so that the click still counts as a user activation.
 
