@@ -94,6 +94,26 @@ const TURN_SECRET = process.env.SCREENSY_TURN_SECRET || null;
  */
 const TURN_TTL_S = numberFromEnv("SCREENSY_TURN_TTL_S", 86_400);
 
+// The syntax of STUN and TURN URLs (RFC 7064 and 7065): a scheme, a host, an optional port and, for TURN, an optional
+// transport. A browser throws on anything else when it creates a connection, which would break every connection
+// without a message to the person who runs the server. So a mistake stops the server at once.
+const ICE_HOST = String.raw`(\[[0-9a-fA-F:.]+\]|[^\s:/?#[\]@]+)(:\d{1,5})?`;
+const STUN_URL = new RegExp(`^stuns?:${ICE_HOST}$`);
+const TURN_URL = new RegExp(String.raw`^turns?:${ICE_HOST}(\?transport=(udp|tcp))?$`);
+
+for (const [name, urls, pattern] of [
+  ["SCREENSY_STUN_URLS", STUN_URLS, STUN_URL],
+  ["SCREENSY_TURN_URLS", TURN_URLS, TURN_URL],
+] as const) {
+  // {host} stands for a host name, so check the URLs with one in its place
+  const invalid = urls.filter((url) => !pattern.test(url.replaceAll("{host}", "example.com")));
+
+  if (invalid.length > 0) {
+    console.error(`${name} has invalid URLs: ${invalid.join(", ")}`);
+    process.exit(1);
+  }
+}
+
 /**
  * A presenter seat as the room stores it. The remaining grace period is computed from the participant when sent.
  */

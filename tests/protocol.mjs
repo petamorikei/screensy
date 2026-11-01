@@ -172,6 +172,27 @@ test("welcome lists the STUN and TURN servers, with temporary TURN credentials",
   await b.close();
 });
 
+test("invalid STUN or TURN URLs stop the server at start", async () => {
+  for (const [name, value] of [
+    ["SCREENSY_TURN_URLS", "turn://{host}"],
+    ["SCREENSY_STUN_URLS", "http://example.com"],
+  ]) {
+    // It exits before it listens, so port 4000 of the running server does not matter
+    const child = spawn("node", ["server.ts"], {
+      cwd: fileURLToPath(new URL("../screensy-rendezvous", import.meta.url)),
+      env: { ...process.env, [name]: value },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (d) => {
+      stderr += d;
+    });
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+    assert.equal(code, 1, `${name}=${value} stops the server`);
+    assert.match(stderr, new RegExp(`${name} has invalid URLs`));
+  }
+});
+
 test("a malformed Host header leaves out the {host} servers, and the server keeps running", async () => {
   const room = newRoom();
   const bad = new Client("bad", { headers: { Host: "[" } });
