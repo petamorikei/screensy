@@ -82,8 +82,20 @@
             <p id="status-switching" class="hidden">
                 <span class="name-slot"></span>さんの画面に切り替えています…
             </p>
-            <p id="status-presenter-reconnecting" class="hidden">
-                <span class="name-slot"></span>さんの接続が切れました。再接続を待っています…
+            <p id="status-presenter-left" class="hidden">
+                <span class="name-slot"></span>さんがページを離れました。戻ってくるのを待っています…<span
+                    class="countdown"
+                    >（あと <span class="countdown-slot"></span>）</span
+                >
+            </p>
+            <p id="status-presenter-lost" class="hidden">
+                <span class="name-slot"></span>さんの接続が切れました。再接続を待っています…<span
+                    class="countdown"
+                    >（あと <span class="countdown-slot"></span>）</span
+                >
+            </p>
+            <p id="status-presenter-resuming" class="hidden">
+                <span class="name-slot"></span>さんが配信を再開しようとしています…
             </p>
         </div>
         <div class="notices">

@@ -19,11 +19,14 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   A "Stop presenting" button. Presenting also stops when the browser's own
     "Stop sharing" control ends the capture.
 -   Viewers see the state of the room: waiting for a presenter, connecting,
-    switching to a new presenter, and waiting for a disconnected presenter.
+    and switching to a new presenter. When the presenter is away, viewers see
+    whether they left the page, lost their connection or are resuming, with
+    the time left before the seat is freed.
 -   The client reconnects to the rendezvous server when the connection drops.
-    A presenter who reloads the page keeps their seat for 30 seconds and can
-    resume from a dialog. A presenter whose connection drops without a reload
-    resumes automatically.
+    A presenter who leaves the page, for example with a reload, keeps their
+    seat for 30 seconds and can resume from a dialog. A presenter whose
+    connection breaks keeps their seat for 5 minutes and resumes
+    automatically when it comes back.
 -   The rendezvous server pings its clients, so that it notices dead
     connections, and limits the size of incoming messages to 64 KiB.
 

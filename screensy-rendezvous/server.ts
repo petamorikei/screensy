@@ -5,9 +5,23 @@ import { WebSocket, WebSocketServer } from "ws";
 const PORT = 4000;
 
 /**
- * How long a disconnected presenter keeps their seat, so that they can resume after a reload.
+ * How long a presenter whose page closed its socket keeps their seat, so that they can resume after a reload. Closing
+ * the tab looks the same, so this is kept short.
  */
-const GRACE_MS = numberFromEnv("SCREENSY_GRACE_MS", 30_000);
+const LEFT_GRACE_MS = numberFromEnv("SCREENSY_LEFT_GRACE_MS", 30_000);
+
+/**
+ * How long a presenter whose connection broke keeps their seat, for example after a network change or a sleeping
+ * laptop. Their page still holds the capture and resumes without a click when it reconnects.
+ */
+const LOST_GRACE_MS = numberFromEnv("SCREENSY_LOST_GRACE_MS", 300_000);
+
+/**
+ * The close codes of a socket that the page closed on purpose: 1000 (normal), 1001 (going away, sent by the browser
+ * when the page unloads) and 1005 (a close frame without a code, sent by close() without arguments). Every other code,
+ * such as 1006 for a connection that ended without a close frame, means that the connection broke.
+ */
+const CLEAN_CLOSE_CODES = new Set([1000, 1001, 1005]);
 
 /**
  * How often the server pings each client. A client that has not answered the previous ping is terminated.
@@ -98,12 +112,32 @@ interface ParticipantState {
   connected: boolean;
 }
 
+/**
+ * Why a presenter seat is reconnecting: "left" if the page closed its socket (a reload or a closed tab), "lost" if the
+ * connection broke.
+ */
+type DisconnectReason = "left" | "lost";
+
 interface PresenterState {
   participantId: string;
   streamId: string;
   hidden: boolean;
   status: "live" | "reconnecting";
+  /**
+   * Null while the seat is live
+   */
+  disconnectReason: DisconnectReason | null;
+  /**
+   * The time left before the seat is freed, or null if no grace period runs. A presenter who has reconnected but not
+   * resumed yet keeps the seat without a time limit.
+   */
+  graceRemainingMs: number | null;
 }
+
+/**
+ * A presenter seat as the room stores it. The remaining grace period is computed from the participant when sent.
+ */
+type Presenter = Omit<PresenterState, "graceRemainingMs">;
 
 interface MessageRoomState {
   type: "roomstate";
@@ -151,6 +185,10 @@ interface Participant {
   connectionId: string;
   socket: WebSocket | null;
   graceTimer: NodeJS.Timeout | null;
+  /**
+   * When the grace timer fires, in Date.now() time
+   */
+  graceDeadline: number | null;
 }
 
 /**
@@ -224,7 +262,7 @@ class Server {
  */
 class Room {
   private readonly participants = new Map<string, Participant>();
-  private presenters: PresenterState[] = [];
+  private presenters: Presenter[] = [];
 
   private nextParticipantId = 0;
   private nextConnectionId = 0;
@@ -253,6 +291,7 @@ class Room {
         connectionId: "",
         socket: null,
         graceTimer: null,
+        graceDeadline: null,
       };
 
       this.participants.set(participant.id, participant);
@@ -261,10 +300,8 @@ class Room {
         this.replaceSocket(participant);
       }
 
-      if (participant.graceTimer != null) {
-        clearTimeout(participant.graceTimer);
-        participant.graceTimer = null;
-      }
+      // Back within the grace period. A seat is kept without a time limit until the participant resumes or frees it.
+      clearGrace(participant);
     }
 
     participant.name = normalizeName(message.name);
@@ -317,6 +354,7 @@ class Room {
 
     if (presenter != null) {
       presenter.status = "reconnecting";
+      presenter.disconnectReason = "left";
     }
   }
 
@@ -331,10 +369,10 @@ class Room {
       }
     });
 
-    socket.on("close", () => {
+    socket.on("close", (code: number) => {
       // A replaced socket may close after its replacement has joined
       if (participant.socket === socket) {
-        this.handleDisconnect(participant);
+        this.handleDisconnect(participant, CLEAN_CLOSE_CODES.has(code) ? "left" : "lost");
       }
     });
   }
@@ -385,12 +423,13 @@ class Room {
         this.removePresenter(oldest.participantId);
       }
 
-      presenter = { participantId: participant.id, streamId, hidden: false, status: "live" };
+      presenter = { participantId: participant.id, streamId, hidden: false, status: "live", disconnectReason: null };
       this.presenters.push(presenter);
     } else {
       presenter.streamId = streamId;
       presenter.hidden = false;
       presenter.status = "live";
+      presenter.disconnectReason = null;
     }
 
     sendTo(participant, { type: "presentaccepted", streamId });
@@ -412,11 +451,7 @@ class Room {
   }
 
   private removeParticipant(participant: Participant): void {
-    if (participant.graceTimer != null) {
-      clearTimeout(participant.graceTimer);
-      participant.graceTimer = null;
-    }
-
+    clearGrace(participant);
     this.participants.delete(participant.id);
     this.presenters = this.presenters.filter((presenter) => presenter.participantId !== participant.id);
   }
@@ -454,7 +489,7 @@ class Room {
     });
   }
 
-  private handleDisconnect(participant: Participant): void {
+  private handleDisconnect(participant: Participant, reason: DisconnectReason): void {
     participant.socket = null;
 
     const presenter = this.presenterOf(participant.id);
@@ -462,13 +497,19 @@ class Room {
     if (presenter == null) {
       this.removeParticipant(participant);
     } else {
+      const graceMs = reason === "left" ? LEFT_GRACE_MS : LOST_GRACE_MS;
+
       presenter.status = "reconnecting";
+      presenter.disconnectReason = reason;
+      clearGrace(participant);
+      participant.graceDeadline = Date.now() + graceMs;
       participant.graceTimer = setTimeout(() => {
         participant.graceTimer = null;
+        participant.graceDeadline = null;
         this.removeParticipant(participant);
         this.broadcastState();
         this.closeIfEmpty();
-      }, GRACE_MS);
+      }, graceMs);
     }
 
     this.broadcastState();
@@ -481,11 +522,17 @@ class Room {
     }
   }
 
-  private presenterOf(participantId: string): PresenterState | undefined {
+  private presenterOf(participantId: string): Presenter | undefined {
     return this.presenters.find((presenter) => presenter.participantId === participantId);
   }
 
   private broadcastState(): void {
+    const now = Date.now();
+    const graceRemainingMs = (participantId: string): number | null => {
+      const deadline = this.participants.get(participantId)?.graceDeadline;
+      return deadline == null ? null : Math.max(0, deadline - now);
+    };
+
     const message: MessageRoomState = {
       type: "roomstate",
       participants: [...this.participants.values()].map((participant) => ({
@@ -494,13 +541,25 @@ class Room {
         name: participant.name,
         connected: participant.socket != null,
       })),
-      presenters: this.presenters.map((presenter) => ({ ...presenter })),
+      presenters: this.presenters.map((presenter) => ({
+        ...presenter,
+        graceRemainingMs: graceRemainingMs(presenter.participantId),
+      })),
     };
 
     for (const participant of this.participants.values()) {
       sendTo(participant, message);
     }
   }
+}
+
+function clearGrace(participant: Participant): void {
+  if (participant.graceTimer != null) {
+    clearTimeout(participant.graceTimer);
+  }
+
+  participant.graceTimer = null;
+  participant.graceDeadline = null;
 }
 
 function send(socket: WebSocket, message: ServerMessage): void {

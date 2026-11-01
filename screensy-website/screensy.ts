@@ -97,11 +97,25 @@ interface ParticipantState {
   connected: boolean;
 }
 
+/**
+ * Why a presenter seat is reconnecting: "left" if the page closed its socket (a reload or a closed tab), "lost" if the
+ * connection broke.
+ */
+type DisconnectReason = "left" | "lost";
+
 interface PresenterState {
   participantId: string;
   streamId: string;
   hidden: boolean;
   status: "live" | "reconnecting";
+  /**
+   * Null while the seat is live
+   */
+  disconnectReason: DisconnectReason | null;
+  /**
+   * The time left before the seat is freed, or null if no grace period runs
+   */
+  graceRemainingMs: number | null;
 }
 
 interface MessageRoomState {
@@ -168,7 +182,9 @@ type StatusId =
   | "status-waiting"
   | "status-joining"
   | "status-switching"
-  | "status-presenter-reconnecting";
+  | "status-presenter-left"
+  | "status-presenter-lost"
+  | "status-presenter-resuming";
 
 const STATUS_IDS: StatusId[] = [
   "status-connecting",
@@ -176,7 +192,9 @@ const STATUS_IDS: StatusId[] = [
   "status-waiting",
   "status-joining",
   "status-switching",
-  "status-presenter-reconnecting",
+  "status-presenter-left",
+  "status-presenter-lost",
+  "status-presenter-resuming",
 ];
 
 type NoticeId = "notice-taken-over" | "notice-connection-lost" | "notice-access-denied";
@@ -224,6 +242,17 @@ function setNameSlots(element: Element, name: string): void {
   for (const slot of element.querySelectorAll(".name-slot")) {
     slot.textContent = name;
   }
+}
+
+/**
+ * Formats a duration as "m:ss", rounded up, so that "0:00" only shows when the time is up.
+ */
+function formatCountdown(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 /**
@@ -770,7 +799,10 @@ class Ui {
     }
   }
 
-  showStatus(id: StatusId | null, name = ""): void {
+  /**
+   * @param countdown The time left, shown in the ".countdown" of the status, or null to hide it
+   */
+  showStatus(id: StatusId | null, name = "", countdown: string | null = null): void {
     for (const statusId of STATUS_IDS) {
       const element = document.getElementById(statusId);
 
@@ -782,6 +814,14 @@ class Ui {
 
       if (statusId === id) {
         setNameSlots(element, name);
+
+        for (const countdownElement of element.querySelectorAll(".countdown")) {
+          countdownElement.classList.toggle("hidden", countdown == null);
+        }
+
+        for (const slot of element.querySelectorAll(".countdown-slot")) {
+          slot.textContent = countdown ?? "";
+        }
       }
     }
 
@@ -876,6 +916,17 @@ class RoomController {
 
   private dialogMode: DialogMode | null = null;
   private lastShownStreamId: string | null = null;
+
+  /**
+   * When the grace period of each reconnecting presenter ends, by participant ID, in performance.now() time. The
+   * server sends the time left, so that the clocks of the server and the client do not need to agree.
+   */
+  private graceDeadlines = new Map<string, number>();
+
+  /**
+   * Re-renders every second while a countdown is shown
+   */
+  private countdownTimer: number | null = null;
 
   /**
    * @param roomId The ID of the room, as typed in the URL hash
@@ -983,6 +1034,13 @@ class RoomController {
 
   private handleRoomState(state: MessageRoomState): void {
     this.state = state;
+
+    const now = performance.now();
+    this.graceDeadlines = new Map(
+      state.presenters.flatMap((presenter) =>
+        presenter.graceRemainingMs == null ? [] : [[presenter.participantId, now + presenter.graceRemainingMs]],
+      ),
+    );
 
     const selfId = this.selfId;
 
@@ -1235,6 +1293,7 @@ class RoomController {
 
     let status: StatusId | null = null;
     let statusName = "";
+    let countdown: string | null = null;
     let video: MediaStream | null = null;
 
     if (this.outgoing != null) {
@@ -1258,7 +1317,16 @@ class RoomController {
         const stream = this.incoming.get(presenter.streamId);
 
         if (presenter.status === "reconnecting") {
-          status = "status-presenter-reconnecting";
+          const participant = state.participants.find((participant) => participant.id === presenter.participantId);
+          const deadline = this.graceDeadlines.get(presenter.participantId);
+
+          if (participant?.connected) {
+            // Back after a reload, choosing the screen again
+            status = "status-presenter-resuming";
+          } else {
+            status = presenter.disconnectReason === "lost" ? "status-presenter-lost" : "status-presenter-left";
+            countdown = deadline == null ? null : formatCountdown(deadline - performance.now());
+          }
         } else if (stream?.mediaStream != null) {
           video = stream.mediaStream;
           this.lastShownStreamId = presenter.streamId;
@@ -1271,7 +1339,14 @@ class RoomController {
     }
 
     this.ui.setVideo(video, this.outgoing != null);
-    this.ui.showStatus(status, statusName);
+    this.ui.showStatus(status, statusName, countdown);
+
+    if (countdown != null && this.countdownTimer == null) {
+      this.countdownTimer = window.setInterval(() => this.render(), 1000);
+    } else if (countdown == null && this.countdownTimer != null) {
+      window.clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
 
     const viewers =
       state?.participants.filter((participant) => participant.connected && participant.id !== this.selfId).length ?? 0;
