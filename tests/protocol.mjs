@@ -1,19 +1,23 @@
-// Protocol checks for the rendezvous server. The script starts the server on port 4000 with short timers and talks to
-// it with WebSocket clients.
+// Protocol checks for the rendezvous server. The script starts the server with short timers and talks to it with
+// WebSocket clients.
 //
-// Run it with `pnpm test:protocol`. DEBUG prints the output of the server.
+// Run it with `pnpm test:protocol` for the Node.js server (port 4000), or `pnpm test:protocol:cloudflare` for the
+// Durable Object of screensy-cloudflare in `wrangler dev` (SERVER=cloudflare, port 8787), which runs the same rooms on
+// workerd. DEBUG prints the output of the server.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 
-// The clients use the ws package of the rendezvous server: they need terminate() and autoPong, which the built-in
-// WebSocket of Node does not have
+// The clients use the ws package of the rendezvous server: they need terminate() and the Host header, which the
+// built-in WebSocket of Node does not have
 const require = createRequire(new URL("../screensy-rendezvous/package.json", import.meta.url));
 const WebSocket = require("ws");
 
-const SERVER_URL = "ws://localhost:4000";
+const CLOUDFLARE = process.env.SERVER === "cloudflare";
+const PORT = CLOUDFLARE ? 8787 : 4000;
+const SERVER_URL = `ws://localhost:${PORT}`;
 const GRACE_MS = 1500; // the "left" grace period
 const LOST_GRACE_MS = 4000;
 const PING_MS = 1000;
@@ -21,7 +25,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Another server on the port would get the checks instead, with other timers
 const portInUse = await new Promise((resolve) => {
-  const probe = net.connect(4000, "localhost");
+  const probe = net.connect(PORT, "localhost");
   probe.on("connect", () => {
     probe.destroy();
     resolve(true);
@@ -29,25 +33,50 @@ const portInUse = await new Promise((resolve) => {
   probe.on("error", () => resolve(false));
 });
 if (portInUse) {
-  console.error("Port 4000 is in use. Stop the server that uses it and try again.");
+  console.error(`Port ${PORT} is in use. Stop the server that uses it and try again.`);
   process.exit(1);
 }
 
-const server = spawn("node", ["server.ts"], {
-  cwd: fileURLToPath(new URL("../screensy-rendezvous", import.meta.url)),
-  env: {
-    ...process.env,
-    SCREENSY_LEFT_GRACE_MS: String(GRACE_MS),
-    SCREENSY_LOST_GRACE_MS: String(LOST_GRACE_MS),
-    SCREENSY_PING_INTERVAL_MS: String(PING_MS),
-    // The checks of takeovers are simplest with one presenter; the browser checks also run with four
-    SCREENSY_MAX_PRESENTERS: "1",
-    // One URL with {host} and one without
-    SCREENSY_STUN_URLS: "stun:{host},stun:stun.example.com:3478",
-  },
-  stdio: ["ignore", process.env.DEBUG ? "inherit" : "ignore", process.env.DEBUG ? "inherit" : "ignore"],
+const SERVER_ENV = {
+  SCREENSY_LEFT_GRACE_MS: String(GRACE_MS),
+  SCREENSY_LOST_GRACE_MS: String(LOST_GRACE_MS),
+  SCREENSY_PING_INTERVAL_MS: String(PING_MS),
+  // The checks of takeovers are simplest with one presenter; the browser checks also run with four
+  SCREENSY_MAX_PRESENTERS: "1",
+  // One URL with {host} and one without
+  SCREENSY_STUN_URLS: "stun:{host},stun:stun.example.com:3478",
+};
+const output = process.env.DEBUG ? "inherit" : "ignore";
+const server = CLOUDFLARE
+  ? // wrangler runs workerd as a child process, so the whole process group is stopped at the end
+    spawn(
+      "pnpm",
+      [
+        "exec",
+        "wrangler",
+        "dev",
+        `--port=${PORT}`,
+        "--show-interactive-dev-session=false",
+        ...Object.entries(SERVER_ENV).map(([name, value]) => `--var=${name}:${value}`),
+      ],
+      {
+        cwd: fileURLToPath(new URL("../screensy-cloudflare", import.meta.url)),
+        env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+        stdio: ["ignore", output, output],
+        detached: true,
+      },
+    )
+  : spawn("node", ["server.ts"], {
+      cwd: fileURLToPath(new URL("../screensy-rendezvous", import.meta.url)),
+      env: { ...process.env, ...SERVER_ENV },
+      stdio: ["ignore", output, output],
+    });
+process.on("exit", () => {
+  try {
+    if (CLOUDFLARE) process.kill(-server.pid, "SIGTERM");
+    else server.kill();
+  } catch {}
 });
-process.on("exit", () => server.kill());
 let roomCounter = 0;
 const newRoom = () => `room-${Date.now()}-${roomCounter++}`;
 
@@ -56,9 +85,16 @@ class Client {
     this.label = label;
     this.messages = [];
     this.waiters = [];
-    this.ws = new WebSocket(SERVER_URL, { autoPong: opts.autoPong ?? true, headers: opts.headers });
+    this.pings = 0;
+    this.ws = new WebSocket(SERVER_URL, { headers: opts.headers });
     this.ws.on("message", (d) => {
       const m = JSON.parse(d.toString());
+      // The heartbeat is answered like the browser client does, and kept out of the other messages
+      if (m.type === "ping") {
+        this.pings++;
+        if (opts.answerPings ?? true) this.send({ type: "pong" });
+        return;
+      }
       const w = this.waiters.find((w) => w.pred(m));
       if (w) {
         this.waiters.splice(this.waiters.indexOf(w), 1);
@@ -125,7 +161,10 @@ class Client {
 const lastState = async (c, pred = () => true) => c.type("roomstate", pred);
 
 const tests = [];
-const test = (name, fn) => tests.push({ name, fn });
+// nodeOnly: a check of the Node.js entry point (server.ts), which the Worker does not have
+const test = (name, fn, { nodeOnly = false } = {}) => {
+  if (!(nodeOnly && CLOUDFLARE)) tests.push({ name, fn });
+};
 
 test("join gets welcome and roomstate", async () => {
   const room = newRoom();
@@ -148,38 +187,46 @@ test("welcome lists the STUN servers, with {host} replaced", async () => {
   await a.close();
 });
 
-test("invalid STUN URLs stop the server at start", async () => {
-  for (const [name, value] of [
-    ["SCREENSY_STUN_URLS", "stun://{host}"],
-    ["SCREENSY_STUN_URLS", "http://example.com"],
-  ]) {
-    // It exits before it listens, so port 4000 of the running server does not matter
-    const child = spawn("node", ["server.ts"], {
-      cwd: fileURLToPath(new URL("../screensy-rendezvous", import.meta.url)),
-      env: { ...process.env, [name]: value },
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (d) => {
-      stderr += d;
-    });
-    const code = await new Promise((resolve) => child.on("exit", resolve));
-    assert.equal(code, 1, `${name}=${value} stops the server`);
-    assert.match(stderr, new RegExp(`${name} has invalid URLs`));
-  }
-});
+test(
+  "invalid STUN URLs stop the server at start",
+  async () => {
+    for (const [name, value] of [
+      ["SCREENSY_STUN_URLS", "stun://{host}"],
+      ["SCREENSY_STUN_URLS", "http://example.com"],
+    ]) {
+      // It exits before it listens, so port 4000 of the running server does not matter
+      const child = spawn("node", ["server.ts"], {
+        cwd: fileURLToPath(new URL("../screensy-rendezvous", import.meta.url)),
+        env: { ...process.env, [name]: value },
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (d) => {
+        stderr += d;
+      });
+      const code = await new Promise((resolve) => child.on("exit", resolve));
+      assert.equal(code, 1, `${name}=${value} stops the server`);
+      assert.match(stderr, new RegExp(`${name} has invalid URLs`));
+    }
+  },
+  { nodeOnly: true },
+);
 
-test("a malformed Host header leaves out the {host} servers, and the server keeps running", async () => {
-  const room = newRoom();
-  const bad = new Client("bad", { headers: { Host: "[" } });
-  const w = await bad.join(room, "Bad");
-  assert.deepEqual(w.iceServers, [{ urls: ["stun:stun.example.com:3478"] }]);
-  const good = new Client("good");
-  const w2 = await good.join(room, "Good");
-  assert.deepEqual(w2.iceServers, [{ urls: ["stun:localhost", "stun:stun.example.com:3478"] }]);
-  await bad.close();
-  await good.close();
-});
+test(
+  "a malformed Host header leaves out the {host} servers, and the server keeps running",
+  async () => {
+    const room = newRoom();
+    const bad = new Client("bad", { headers: { Host: "[" } });
+    const w = await bad.join(room, "Bad");
+    assert.deepEqual(w.iceServers, [{ urls: ["stun:stun.example.com:3478"] }]);
+    const good = new Client("good");
+    const w2 = await good.join(room, "Good");
+    assert.deepEqual(w2.iceServers, [{ urls: ["stun:localhost", "stun:stun.example.com:3478"] }]);
+    await bad.close();
+    await good.close();
+  },
+  { nodeOnly: true },
+);
 
 test("present and takeover", async () => {
   const room = newRoom();
@@ -287,7 +334,7 @@ test("broken connection -> reason lost with the long grace period", async () => 
 
 test("heartbeat timeout of a presenter -> reason lost", async () => {
   const room = newRoom();
-  const dead = new Client("dead", { autoPong: false });
+  const dead = new Client("dead", { answerPings: false });
   const v = new Client("v");
   await dead.join(room, "D");
   await v.join(room, "V");
@@ -557,7 +604,7 @@ test("stoppresenting frees the seat; viewer disconnect removes immediately", asy
 
 test("heartbeat terminates clients that do not answer pings", async () => {
   const room = newRoom();
-  const dead = new Client("dead", { autoPong: false });
+  const dead = new Client("dead", { answerPings: false });
   const v = new Client("v");
   await dead.join(room, "D");
   await v.join(room, "V");
@@ -565,6 +612,31 @@ test("heartbeat terminates clients that do not answer pings", async () => {
   await lastState(v, (s) => s.participants.length === 1, PING_MS * 3 + 1000);
   await dead.closed;
   await v.close();
+});
+
+test("a client that answers the pings stays, also before it joins", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  const early = new Client("early");
+  await a.join(room, "A");
+  await early.opened;
+  await sleep(PING_MS * 3 + 500);
+  assert.ok(a.pings >= 2, "the server sends pings");
+  assert.equal(a.ws.readyState, WebSocket.OPEN);
+  assert.equal(early.ws.readyState, WebSocket.OPEN);
+  await early.join(room, "Early");
+  const s = await lastState(a, (s) => s.participants.length === 2);
+  assert.ok(s.participants.every((p) => p.connected));
+  await a.close();
+  await early.close();
+});
+
+test("a connection that never joins nor answers is dropped", async () => {
+  const silent = new Client("silent", { answerPings: false });
+  await silent.opened;
+  const end = Date.now() + PING_MS * 3 + 1000;
+  await Promise.race([silent.closed, sleep(PING_MS * 3 + 1000)]);
+  assert.ok(Date.now() < end, "the server closes it");
 });
 
 test("empty room is deleted (rejoin gets a fresh room)", async () => {
@@ -607,7 +679,8 @@ for (let attempt = 0; ; attempt++) {
     probe.on("error", () => resolve(false));
   });
   if (ready) break;
-  if (attempt === 50) throw new Error("the rendezvous server did not start");
+  // wrangler takes a few seconds to start
+  if (attempt === (CLOUDFLARE ? 600 : 50)) throw new Error("the rendezvous server did not start");
   await sleep(100);
 }
 

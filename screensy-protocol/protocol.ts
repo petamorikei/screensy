@@ -63,6 +63,13 @@ const PresentSchema = z.object({
   replace: z.string().optional(),
 });
 
+/**
+ * The answer to "ping"
+ */
+const PongSchema = z.object({
+  type: z.literal("pong"),
+});
+
 const StopPresentingSchema = z.object({
   type: z.literal("stoppresenting"),
 });
@@ -88,6 +95,7 @@ const SignalToServerSchema = z.discriminatedUnion("kind", [
  * Every message after "join"
  */
 export const ClientMessageSchema = z.discriminatedUnion("type", [
+  PongSchema,
   SetNameSchema,
   PresentSchema,
   StopPresentingSchema,
@@ -184,6 +192,14 @@ const PresentRejectedSchema = z.object({
 });
 
 /**
+ * The heartbeat. The client answers "pong". A client that sends nothing between two pings is dropped. The server sends
+ * it, because browsers delay the timers of background tabs, but not the messages that they receive.
+ */
+const PingSchema = z.object({
+  type: z.literal("ping"),
+});
+
+/**
  * Another socket has joined with this client's resume token, for example from a duplicated tab.
  */
 const ReplacedSchema = z.object({
@@ -191,6 +207,7 @@ const ReplacedSchema = z.object({
 });
 
 export const ServerMessageSchema = z.discriminatedUnion("type", [
+  PingSchema,
   WelcomeSchema,
   RoomStateSchema,
   SignalFromServerSchema,
