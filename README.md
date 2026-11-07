@@ -13,8 +13,13 @@ directly sent from the browser of the broadcaster to the browser of each viewer.
 All traffic (between rendezvous and browser and between browsers) is encrypted
 by default.
 
-There are two ways to set up screensy. If you don't know which one to choose, we
-recommend using Docker.
+There are three ways to set up screensy: with Docker, without Docker, or on
+Cloudflare Workers. If you don't know which one to choose, we recommend using
+Docker on a server of your own, or Cloudflare Workers if you have no server.
+
+Screensy does not relay the video: when two browsers find no direct path, for
+example between some mobile or company networks, the viewer gets no video. See
+[STUN servers](#stun-servers).
 
 ## Server Setup (With Docker)
 
@@ -55,33 +60,14 @@ recommend using Docker.
 5.  _Optional_: password-protect your screensy instance using the method
     described at the bottom of this document.
 
-6.  Change the value of the "external-ip" setting in the included
-    "turnserver.conf" from "localhost" to your domain. For example if you want
-    to host screensy on the domain "example.com", the first two lines of your
-    "turnserver.conf" should look like this:
+6.  _Optional_: create the file ".env" from ".env.example" to change the
+    STUN servers or the number of people that can present at the same time;
+    see [STUN servers](#stun-servers).
 
-    ```ini
-    # Set the value below to your public IP address or domain.
-    external-ip=example.com
-    ```
-
-7.  Create the file ".env" from ".env.example", and set
-    `SCREENSY_TURN_SECRET` to a random secret. The rendezvous server and the
-    TURN server share it: the rendezvous server gives every participant a
-    temporary TURN username signed with it. Create a secret with the following
-    command:
-
-    ```sh
-    openssl rand -hex 32
-    ```
-
-    ".env" also chooses the STUN and TURN servers; see
-    [STUN and TURN servers](#stun-and-turn-servers).
-
-8.  Make sure the required ports are accessible. We listed these ports at the
+7.  Make sure the required ports are accessible. We listed these ports at the
     bottom of this document.
 
-9.  Start the Docker containers using Docker Compose, by running the following
+8.  Start the Docker containers using Docker Compose, by running the following
     command:
 
     ```sh
@@ -95,7 +81,6 @@ recommend using Docker.
         Node.js, pnpm and Go listed in "mise.toml"
     -   A reverse proxy that supports WebSocket (we recommend Caddy)
     -   A STUN server (we recommend Coturn)
-    -   A TURN server (again, we recommend Coturn)
 
 2.  Clone this repository and navigate to it, using the following commands:
 
@@ -133,29 +118,24 @@ recommend using Docker.
     This starts the webserver on port 8080. We do not use the standard port "80"
     for this, as it will conflict with the reverse proxy we will set up in step 9.
 
-7.  Set up the STUN and TURN server. Use temporary credentials with a secret
-    that you share with the rendezvous server (create one with
-    `openssl rand -hex 32`). We use the following "turnserver.conf" for this:
+7.  Set up the STUN server. We use Coturn with the following "turnserver.conf"
+    for this:
 
     ```ini
-    external-ip=example.com
     listening-port=3478
-    use-auth-secret
-    static-auth-secret=<secret>
-    realm=screensy
+    stun-only
+    no-tls
     ```
 
-8.  Start the rendezvous server with the same secret, using the following
-    command from the root of the repository:
+8.  Start the rendezvous server, using the following command from the root of
+    the repository:
 
     ```sh
-    SCREENSY_TURN_SECRET=<secret> pnpm --filter screensy-rendezvous start
+    pnpm --filter screensy-rendezvous start
     ```
 
-    See [STUN and TURN servers](#stun-and-turn-servers) for the other
-    settings.
-
-    This starts a WebSocket server on port 4000.
+    This starts a WebSocket server on port 4000. See
+    [STUN servers](#stun-servers) for its settings.
 
 9.  Reverse proxy both the static file server and the rendezvous server. We use
     the following Caddyfile for this:
@@ -175,6 +155,52 @@ recommend using Docker.
 
     Keep in mind that most web browsers require HTTPS for WebRTC to work.
 
+## Setup on Cloudflare Workers
+
+The "screensy-cloudflare" package runs screensy on Cloudflare: a Worker serves
+the page, and a Durable Object runs the rendezvous server. It fits in the free
+Workers plan, and Cloudflare provides the HTTPS address (`*.workers.dev`) and a
+public STUN server.
+
+1.  Clone this repository, and install the toolchain and the dependencies, as in
+    steps 2 and 3 of [Server Setup (Without Docker)](#server-setup-without-docker).
+
+2.  Log in to Cloudflare with Wrangler:
+
+    ```sh
+    pnpm --filter screensy-cloudflare exec wrangler login
+    ```
+
+3.  _Optional_: change the settings in "vars" of
+    "screensy-cloudflare/wrangler.jsonc" (see [STUN servers](#stun-servers)).
+
+4.  Build and deploy:
+
+    ```sh
+    pnpm --filter screensy-cloudflare run cf:deploy
+    ```
+
+    Wrangler prints the address, such as
+    `https://screensy.<your-subdomain>.workers.dev`.
+
+`pnpm --filter screensy-cloudflare dev` runs the same Worker on your machine, at
+http://localhost:8787.
+
+Things to know:
+
+-   The free plan allows 100,000 requests to the Durable Object a day, and every
+    message that a browser sends counts. A browser answers the server's ping
+    every 15 seconds (240 times an hour), and setting up a connection takes a
+    few dozen messages more. Over the limit, connections fail until 00:00 UTC.
+-   All the rooms live in the memory of one Durable Object, which stays running
+    while anyone is connected. Deploying, or Cloudflare restarting it, ends every
+    room: the browsers reconnect into new rooms, and the presenters have to
+    start again. While nobody is connected, Cloudflare may also stop it: a
+    presenter who reloads the page alone in a room may not get their seat back.
+-   There is no Caddy, so the Basic Authentication below does not apply. Put
+    [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+    in front of the Worker to restrict who can open it.
+
 ## Optional: password-protect your screensy instance
 
 To password-protect your screensy instance, you can set up HTTP Basic
@@ -189,11 +215,6 @@ internet:
     the whole instance instead: the page, and the WebSocket connection to the
     rendezvous server. Browsers ask for the username and password once, and
     then send them on the WebSocket connection too.
--   It protects the TURN server too, in a way: the rendezvous server only gives
-    temporary TURN usernames to the people who can open the page, and they
-    expire after a day (`SCREENSY_TURN_TTL_S`). Without Basic Authentication,
-    anyone who opens the page can get one and relay traffic through your TURN
-    server until it expires.
 
 1.  Choose a username and password.
 
@@ -242,49 +263,71 @@ internet:
     }
     ```
 
-## STUN and TURN servers
+## STUN servers
 
-WebRTC connects the presenter and each viewer directly when it can. A STUN
-server tells each browser its address as seen from the internet, and a TURN
-server relays the video when no direct path works, for example between some
-mobile networks. The rendezvous server tells the browsers which servers to use,
-from these environment variables (in ".env" with Docker Compose):
+WebRTC connects the presenter and each viewer directly. A STUN server tells each
+browser its address as the other side sees it, so that browsers behind a router
+can find each other. Screensy has no TURN server to relay the video when no
+direct path works, for example between some mobile networks: those viewers get
+no video. The video never goes through a STUN server.
 
-| Variable               | Default       | Meaning                                                                                                        |
-| ---------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
-| `SCREENSY_TURN_SECRET` | (none)        | The secret shared with the TURN server (`static-auth-secret`). Without it, browsers get no TURN server.        |
-| `SCREENSY_STUN_URLS`   | `stun:{host}` | STUN servers, comma-separated. `{host}` is the host name of the page. Set it to nothing to use no STUN server. |
-| `SCREENSY_TURN_URLS`   | `turn:{host}` | TURN servers, comma-separated. Set it to nothing to use no TURN server.                                        |
-| `SCREENSY_TURN_TTL_S`  | `86400`       | How long a temporary TURN username stays valid, in seconds.                                                    |
+The rendezvous server tells the browsers which servers to use, from these
+environment variables (in ".env" with Docker Compose, and in "vars" of
+"wrangler.jsonc" on Cloudflare):
 
-A public STUN server, such as `stun:stun.l.google.com:19302`, works where you
-cannot run your own, but it learns the IP addresses of the participants. The
-video never goes through a STUN server.
+| Variable                  | Default       | Meaning                                                                                                        |
+| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
+| `SCREENSY_STUN_URLS`      | `stun:{host}` | STUN servers, comma-separated. `{host}` is the host name of the page. Set it to nothing to use no STUN server. |
+| `SCREENSY_MAX_PRESENTERS` | `4`           | The number of people that can present at the same time.                                                        |
+
+On Cloudflare, the default is Cloudflare's STUN server,
+`stun:stun.cloudflare.com:3478`. A public STUN server like this one works where
+you cannot run your own, but it learns the IP addresses of the participants.
+
+Docker Compose runs Coturn as the STUN server (the "stun" service) on the host
+network: through Docker's port forwarding, it would see the address of the
+forwarder instead of the browser's.
 
 ### At home, with Tailscale
 
-When screensy runs on a machine at home, browsers outside your network cannot
-reach its STUN and TURN server, unless your router forwards the ports. Tailscale
-offers two ways to use screensy anyway. For both, change the first line of the
-Caddyfile to `:80`, so that Caddy serves plain HTTP and Tailscale provides
-HTTPS.
+When screensy runs on a machine at home, Tailscale offers two ways to reach it.
+For both, change the first line of the Caddyfile to `:80`, so that Caddy serves
+plain HTTP and Tailscale provides HTTPS.
 
--   **Only inside your tailnet**: run `tailscale serve --bg 80`. Everyone in
-    the tailnet can reach the TURN server through Tailscale, so point the
-    servers at the Tailscale name of the machine, and set `external-ip` in
-    "turnserver.conf" to its Tailscale address (`100.x.y.z`):
-
-    ```sh
-    SCREENSY_STUN_URLS=stun:myhost.example.ts.net
-    SCREENSY_TURN_URLS=turn:myhost.example.ts.net
-    ```
+-   **Only inside your tailnet**: run `tailscale serve --bg 80`, and keep the
+    default `stun:{host}`. Inside the tailnet, the name of the page resolves to
+    the Tailscale address of the machine, so the browsers learn their Tailscale
+    addresses from the STUN server, and Tailscale connects them wherever they
+    are.
 
 -   **Public, with Tailscale Funnel**: run `tailscale funnel --bg 80`. Funnel
     only forwards TLS connections over TCP, so viewers outside your tailnet
-    cannot reach the STUN or the TURN server. Set `SCREENSY_STUN_URLS` to a
-    public STUN server so that they can still connect directly, and keep the
-    TURN server for the people in your tailnet. Viewers behind networks that
-    need a relay, such as some mobile networks, will not get the video.
+    cannot reach your STUN server. Add a public one for them, in ".env":
+
+    ```sh
+    SCREENSY_STUN_URLS=stun:{host},stun:stun.cloudflare.com:3478
+    ```
+
+    The people in your tailnet still use yours.
+
+On macOS, the host network of Docker (Docker Desktop, OrbStack) is a virtual
+machine that the tailnet does not reach. Run Coturn from Homebrew instead, with
+the "turnserver.conf" of
+[Server Setup (Without Docker)](#server-setup-without-docker) in
+`$(brew --prefix)/etc/turnserver.conf`:
+
+```sh
+brew install coturn
+brew services start coturn
+```
+
+and leave the "stun" service out with a "docker-compose.override.yaml":
+
+```yaml
+services:
+  stun:
+    profiles: ["stun"]
+```
 
 ## Bandwidth
 
@@ -295,11 +338,11 @@ bitrate or the resolution in the menu when the connections are slow.
 
 ## Ports
 
-The following ports need to be accessible by the client for screensy to work:
+The following ports need to be accessible by the client for screensy to work
+(not on Cloudflare):
 
-| Port number | Protocol | Service   |
-| ----------- | -------- | --------- |
-| 80          | TCP      | HTTP      |
-| 443         | TCP      | HTTPS     |
-| 3478        | TCP/UDP  | STUN/TURN |
-| 49152-65535 | UDP      | TURN      |
+| Port number | Protocol | Service |
+| ----------- | -------- | ------- |
+| 80          | TCP      | HTTP    |
+| 443         | TCP      | HTTPS   |
+| 3478        | TCP/UDP  | STUN    |

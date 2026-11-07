@@ -6,6 +6,8 @@
 screensy-website/screensy.js
 screensy-website/screensy.js.map
 screensy-website/screensy
+screensy-cloudflare/public
+**/.wrangler
 
-# Secrets for Docker Compose
+# Local settings for Docker Compose
 .env

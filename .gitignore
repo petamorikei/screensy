@@ -10,3 +10,7 @@ node_modules/
 
 # Local settings for Docker Compose
 .env
+
+# Cloudflare: the assets that build.mjs copies, and the local state of wrangler dev
+/screensy-cloudflare/public/
+.wrangler/

@@ -1,8 +1,9 @@
 // Browser checks for screensy: two or more headless Chrome pages in one room, driven over CDP with Node's built-in
 // WebSocket. The script starts the rendezvous server, the website, a proxy that routes like the Caddyfile, and Chrome.
 //
-// Run it with `pnpm test:e2e`. It needs Go and Chrome, and the ports 4000, 8080, 8090 and 9333.
+// Run it with `pnpm test:e2e`. It needs Go and Chrome, and the ports 4000, 8080, 8090, 8787 and 9333.
 // - CHROME: the Chrome binary (default: the macOS install location)
+// - SKIP_CLOUDFLARE: skip the last checks, which run screensy-cloudflare in `wrangler dev`
 // - SHOTS: a directory to save screenshots of the UI into
 // - DEBUG: print the output of the servers
 //
@@ -10,7 +11,7 @@
 // keeps its default mDNS host candidates, like a real browser.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -22,19 +23,27 @@ const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/M
 const SHOTS = process.env.SHOTS;
 const PROXY_PORT = 8090;
 const CDP_PORT = 9333;
+const WRANGLER_PORT = 8787;
 const ORIGIN = `http://localhost:${PROXY_PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const children = [];
 const run = (cmd, args, opts) => {
   const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+  child.detached = opts?.detached ?? false;
   child.stdout.on("data", () => {});
   child.stderr.on("data", (d) => process.env.DEBUG && process.stderr.write(d));
   children.push(child);
   return child;
 };
 const cleanup = () => {
-  for (const c of children) c.kill("SIGKILL");
+  for (const c of children) {
+    // A detached child leads a process group: wrangler runs workerd as its own child
+    try {
+      if (c.detached) process.kill(-c.pid, "SIGKILL");
+      else c.kill("SIGKILL");
+    } catch {}
+  }
 };
 process.on("exit", cleanup);
 
@@ -414,7 +423,7 @@ const isPortInUse = (port) => {
 const main = async () => {
   // Other servers on these ports would get the checks instead, with other timers
   const busy = [];
-  for (const port of [4000, 8080, PROXY_PORT, CDP_PORT]) {
+  for (const port of [4000, 8080, PROXY_PORT, WRANGLER_PORT, CDP_PORT]) {
     if (await isPortInUse(port)) busy.push(port);
   }
   if (busy.length > 0) {
@@ -1777,6 +1786,62 @@ const main = async () => {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
   });
+
+  // --- Cloudflare: the Worker, Static Assets and the Durable Object in wrangler dev ---
+
+  if (process.env.SKIP_CLOUDFLARE) {
+    console.log("skip the Cloudflare checks (SKIP_CLOUDFLARE)");
+  } else {
+    const CF_ORIGIN = `http://localhost:${WRANGLER_PORT}`;
+
+    await step("wrangler dev serves screensy-cloudflare", async () => {
+      // test:e2e has built the website; build.mjs copies it into public/
+      execFileSync("node", ["build.mjs"], { cwd: join(REPO, "screensy-cloudflare"), stdio: "inherit" });
+      run("pnpm", ["exec", "wrangler", "dev", `--port=${WRANGLER_PORT}`, "--show-interactive-dev-session=false"], {
+        cwd: join(REPO, "screensy-cloudflare"),
+        env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+        detached: true,
+      });
+      await waitHttp(`${CF_ORIGIN}/styles.css`, 60000);
+    });
+
+    await step(
+      "the Worker picks the language like the Go server, and Static Assets serve the other files",
+      async () => {
+        const languageOf = async (url, acceptLanguage) => {
+          const r = await fetch(url, { headers: { "Accept-Language": acceptLanguage } });
+          assert.equal(r.status, 200);
+          return { lang: /<html lang="(\w+)">/.exec(await r.text())?.[1], headers: r.headers };
+        };
+        for (const acceptLanguage of ["ja,en;q=0.8", "en-US", "fr", "fr, ja-JP;q=0.5", "en;q=0.2, ja;q=0.9", ""]) {
+          for (const path of ["/", "/index.html"]) {
+            const worker = await languageOf(`${CF_ORIGIN}${path}`, acceptLanguage);
+            const go = await languageOf(`http://localhost:8080${path}`, acceptLanguage);
+            assert.equal(worker.lang, go.lang, `"${acceptLanguage}" on ${path}`);
+            assert.equal(worker.headers.get("cache-control"), "no-cache");
+            assert.match(worker.headers.get("vary") ?? "", /Accept-Language/i);
+          }
+        }
+        const script = await fetch(`${CF_ORIGIN}/screensy.js`);
+        assert.equal(await script.text(), readFileSync(join(REPO, "screensy-website", "screensy.js"), "utf8"));
+        assert.equal((await fetch(`${CF_ORIGIN}/styles.css`)).status, 200);
+      },
+    );
+
+    await step("through the Durable Object, a viewer gets the presentation", async () => {
+      const presenter = await newPage(cdp, "W1");
+      await presenter.goto(`${CF_ORIGIN}/`);
+      const s = await presenter.waitFor("W1 start dialog", (s) => s.dialogOpen, 15000);
+      await presenter.submitDialog("Wendy");
+      await presenter.waitFor("W1 presenting", (s) => s.videoLocal);
+      const viewer = await newPage(cdp, "W2");
+      await viewer.goto(`${CF_ORIGIN}/${s.hash}`);
+      await viewer.waitFor("W2 video through the Worker's signaling", (s) => s.videoPlaying, 20000);
+      for (const page of [presenter, viewer]) {
+        await cdp.send("Target.closeTarget", { targetId: page.targetId });
+      }
+    });
+  }
 
   console.log(results.every(Boolean) ? "all passed" : "some failed");
 };

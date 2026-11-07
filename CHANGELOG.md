@@ -9,10 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
--   The STUN and TURN servers can be chosen with environment variables of the
-    rendezvous server (`SCREENSY_STUN_URLS`, `SCREENSY_TURN_URLS`), for
-    example a public STUN server or the Tailscale name of a machine at home.
-    The README explains how to run screensy with Tailscale.
+-   Screensy runs on Cloudflare Workers, in the free plan: the new
+    "screensy-cloudflare" package serves the page from a Worker and runs the
+    rendezvous server in a Durable Object (`pnpm --filter screensy-cloudflare
+    run cf:deploy`).
+-   The STUN servers can be chosen with an environment variable of the
+    rendezvous server (`SCREENSY_STUN_URLS`), for example a public STUN server
+    or the Tailscale name of a machine at home. The README explains how to run
+    screensy inside a tailnet or with Tailscale Funnel.
 -   Anyone in a room can start presenting at any time with the "Present"
     button. Up to four people can present at once, shown side by side; a
     click enlarges one of them. When the room is full of presenters, the start
@@ -45,7 +49,7 @@ The format is based on [Keep a Changelog], and this project adheres to
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.
 -   The menu shows the connection statistics while it is open: the state, the
-    route (direct or through TURN), the codecs, the resolution, the frame rate,
+    route, the codecs, the resolution, the frame rate,
     the bitrate, the round trip time and the packet loss. The presenter sees
     them per viewer, with the reason when the quality is limited.
 -   Someone without a name is shown as a numbered guest, such as "Guest 3",
@@ -59,19 +63,16 @@ The format is based on [Keep a Changelog], and this project adheres to
     seat for 30 seconds and can resume from a dialog. A presenter whose
     connection breaks keeps their seat for 5 minutes and resumes
     automatically when it comes back.
--   The rendezvous server pings its clients, so that it notices dead
-    connections, and limits the size of incoming messages to 64 KiB.
+-   The rendezvous server sends a "ping" message to its clients every 15
+    seconds, so that it notices dead connections, and limits the size of
+    incoming messages to 64 KiB.
 -   Add test scripts for developers: `pnpm test:protocol` checks the
-    signaling protocol against the rendezvous server, and `pnpm test:e2e`
-    checks the website in headless Chrome.
+    signaling protocol against the rendezvous server (and
+    `pnpm test:protocol:cloudflare` against the Durable Object), and
+    `pnpm test:e2e` checks the website in headless Chrome.
 
 ### Changed
 
--   The TURN server no longer uses the fixed username and password
-    "screensy", which anyone could read in the website's code. The
-    rendezvous server gives every participant a temporary TURN username,
-    signed with a secret that it shares with coturn. Set
-    `SCREENSY_TURN_SECRET` in ".env" (see ".env.example").
 -   Replace the signaling protocol. The fixed broadcaster and viewer roles are
     gone. The server sends the state of the room to every participant and
     relays WebRTC messages per stream. The protocol is ready for several
@@ -90,9 +91,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   Update `golang.org/x/text` to 0.43.0 and add the missing "go.sum".
 -   Update the Docker images to Node.js 26, Go 1.27 and Alpine 3.24. They are
     now built from the root of the repository.
--   Update Caddy to 2.11.7 and coturn to 4.18.0. Drop the `no-cli` and
-    `no-dtls` options from "turnserver.conf", because they are now the
-    default.
+-   Update Caddy to 2.11.7 and coturn to 4.18.0.
+-   The rooms of the rendezvous server live in "rooms.ts", which runs both on
+    Node.js and in the Durable Object.
 -   Use `basic_auth` instead of the deprecated `basicauth` in the Caddyfile.
 -   The website container now serves files only from its own directory, instead
     of from the root of the filesystem.
@@ -104,6 +105,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Removed
 
+-   Remove the TURN relay. Coturn only runs as a STUN server now, on the host
+    network, so "turnserver.conf" and its fixed username and password are
+    gone. Viewers who find no direct path to the presenter, for example on
+    some mobile networks, get no video.
 -   Remove the Chinese, Czech, Dutch, French, German, Hebrew and Portuguese
     translations. Screensy is now available in English and Japanese only.
 
@@ -120,9 +125,6 @@ The format is based on [Keep a Changelog], and this project adheres to
     objects, instead of passing them to its type guards.
 -   The Docker example Caddyfile in the README now uses the correct port of the
     website container.
--   The `external-ip` setting in "turnserver.conf" now takes effect with
-    Docker. The coturn image's default command also passed an auto-detected
-    external IP, which conflicted with it.
 
 ## 1.9.0 - 2023-02-07
 

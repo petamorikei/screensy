@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "screensy",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-04",
+  "assets": {
+    // Written by build.mjs from screensy-website
+    "directory": "./public",
+    "binding": "ASSETS",
+    // The page and the WebSocket upgrades go through the Worker; Static Assets serve every other path directly
+    "run_worker_first": ["/", "/index.html"],
+    // Serve /translations/ja.html as it is, instead of redirecting it to /translations/ja
+    "html_handling": "none"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RENDEZVOUS", "class_name": "Rendezvous" }]
+  },
+  // The Workers Free plan only has Durable Objects with SQLite storage. The rooms live in memory and store nothing.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Rendezvous"] }],
+  "vars": {
+    "SCREENSY_STUN_URLS": "stun:stun.cloudflare.com:3478"
+  },
+  "observability": { "enabled": true }
+}
