@@ -8,5 +8,9 @@ node_modules/
 # Go binary
 /screensy-website/screensy
 
-# Secrets for Docker Compose
+# Local settings for Docker Compose
 .env
+
+# Cloudflare: the assets that build.mjs copies, and the local state of wrangler dev
+/screensy-cloudflare/public/
+.wrangler/

@@ -63,6 +63,13 @@ const PresentSchema = z.object({
   replace: z.string().optional(),
 });
 
+/**
+ * The answer to "ping"
+ */
+const PongSchema = z.object({
+  type: z.literal("pong"),
+});
+
 const StopPresentingSchema = z.object({
   type: z.literal("stoppresenting"),
 });
@@ -88,6 +95,7 @@ const SignalToServerSchema = z.discriminatedUnion("kind", [
  * Every message after "join"
  */
 export const ClientMessageSchema = z.discriminatedUnion("type", [
+  PongSchema,
   SetNameSchema,
   PresentSchema,
   StopPresentingSchema,
@@ -98,12 +106,10 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
 // Messages from the server to the client
 
 /**
- * A STUN or TURN server, as RTCIceServer. A TURN server comes with a temporary username and credential.
+ * STUN servers, as RTCIceServer
  */
 const IceServerSchema = z.object({
   urls: z.array(z.string()).min(1),
-  username: z.string().optional(),
-  credential: z.string().optional(),
 });
 
 const WelcomeSchema = z.object({
@@ -116,7 +122,7 @@ const WelcomeSchema = z.object({
    */
   maxPresenters: z.number().int().positive(),
   /**
-   * The STUN and TURN servers for new WebRTC connections, chosen by the server's configuration
+   * The STUN servers for new WebRTC connections, chosen by the server's configuration
    */
   iceServers: z.array(IceServerSchema),
 });
@@ -186,6 +192,14 @@ const PresentRejectedSchema = z.object({
 });
 
 /**
+ * The heartbeat. The client answers "pong". A client that sends nothing between two pings is dropped. The server sends
+ * it, because browsers delay the timers of background tabs, but not the messages that they receive.
+ */
+const PingSchema = z.object({
+  type: z.literal("ping"),
+});
+
+/**
  * Another socket has joined with this client's resume token, for example from a duplicated tab.
  */
 const ReplacedSchema = z.object({
@@ -193,6 +207,7 @@ const ReplacedSchema = z.object({
 });
 
 export const ServerMessageSchema = z.discriminatedUnion("type", [
+  PingSchema,
   WelcomeSchema,
   RoomStateSchema,
   SignalFromServerSchema,

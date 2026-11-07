@@ -8,7 +8,8 @@
     "strict": true,
     "noEmit": true,
     "erasableSyntaxOnly": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true
   },
-  "files": ["server.ts"]
+  "files": ["server.ts", "rooms.ts"]
 }

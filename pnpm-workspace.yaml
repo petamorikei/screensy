@@ -1,4 +1,10 @@
 packages:
+  - screensy-cloudflare
   - screensy-protocol
   - screensy-rendezvous
   - screensy-website
+
+# Their install scripts only check the binaries of the platform packages, which pnpm installs anyway
+allowBuilds:
+  esbuild: false
+  workerd: false

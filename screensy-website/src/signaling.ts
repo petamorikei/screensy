@@ -65,7 +65,12 @@ export class SignalingConnection {
       const result = ServerMessageSchema.safeParse(message);
 
       if (result.success) {
-        this.onmessage?.(result.data);
+        if (result.data.type === "ping") {
+          // The heartbeat stays here. The answer comes from the message event, which background tabs do not delay.
+          this.send({ type: "pong" });
+        } else {
+          this.onmessage?.(result.data);
+        }
       } else {
         console.warn("Dropped an invalid message from the server.", result.error);
       }

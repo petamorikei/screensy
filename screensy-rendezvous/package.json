@@ -4,6 +4,10 @@
   "description": "The signaling server for screensy",
   "type": "module",
   "main": "server.ts",
+  "exports": {
+    ".": "./server.ts",
+    "./rooms": "./rooms.ts"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/screensy/screensy.git"

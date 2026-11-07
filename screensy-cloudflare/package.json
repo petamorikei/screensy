@@ -1,0 +1,24 @@
+{
+  "name": "screensy-cloudflare",
+  "private": true,
+  "description": "screensy on Cloudflare Workers, with the rendezvous server in a Durable Object",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter screensy-website build && node build.mjs",
+    "dev": "pnpm run build && wrangler dev",
+    "cf:deploy": "pnpm run build && wrangler deploy",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "screensy-protocol": "workspace:*",
+    "screensy-rendezvous": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261106.1",
+    "screensy-website": "workspace:*",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.158.0"
+  }
+}
