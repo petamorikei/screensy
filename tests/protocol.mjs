@@ -4,7 +4,6 @@
 // Run it with `pnpm test:protocol`. DEBUG prints the output of the server.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
@@ -18,7 +17,6 @@ const SERVER_URL = "ws://localhost:4000";
 const GRACE_MS = 1500; // the "left" grace period
 const LOST_GRACE_MS = 4000;
 const PING_MS = 1000;
-const TURN_SECRET = "test-secret";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Another server on the port would get the checks instead, with other timers
@@ -44,9 +42,8 @@ const server = spawn("node", ["server.ts"], {
     SCREENSY_PING_INTERVAL_MS: String(PING_MS),
     // The checks of takeovers are simplest with one presenter; the browser checks also run with four
     SCREENSY_MAX_PRESENTERS: "1",
-    // STUN keeps its default (stun:{host}); TURN gets two URLs and a secret
-    SCREENSY_TURN_URLS: "turn:{host}:3479,turns:{host}:5349",
-    SCREENSY_TURN_SECRET: TURN_SECRET,
+    // One URL with {host} and one without
+    SCREENSY_STUN_URLS: "stun:{host},stun:stun.example.com:3478",
   },
   stdio: ["ignore", process.env.DEBUG ? "inherit" : "ignore", process.env.DEBUG ? "inherit" : "ignore"],
 });
@@ -144,37 +141,16 @@ test("join gets welcome and roomstate", async () => {
   await a.close();
 });
 
-// The temporary TURN username of coturn's TURN REST API: "<expiry in Unix seconds>:<participant ID>", signed with
-// HMAC-SHA1 and the shared secret
-const assertTurnCredentials = (server, participantId) => {
-  const [expiry, name] = server.username.split(":");
-  assert.equal(name, participantId);
-  const expected = Date.now() / 1000 + 86_400;
-  assert.ok(Math.abs(Number(expiry) - expected) < 10, `expiry ${expiry} is about a day from now`);
-  assert.equal(server.credential, createHmac("sha1", TURN_SECRET).update(server.username).digest("base64"));
-};
-
-test("welcome lists the STUN and TURN servers, with temporary TURN credentials", async () => {
-  const room = newRoom();
+test("welcome lists the STUN servers, with {host} replaced", async () => {
   const a = new Client("a");
-  const w = await a.join(room, "A");
-  assert.equal(w.iceServers.length, 2);
-  assert.deepEqual(w.iceServers[0], { urls: ["stun:localhost"] });
-  assert.deepEqual(w.iceServers[1].urls, ["turn:localhost:3479", "turns:localhost:5349"]);
-  assertTurnCredentials(w.iceServers[1], w.selfId);
-  // A rejoin gets new credentials
-  const b = new Client("a2");
-  await sleep(1100);
-  const w2 = await b.join(room, "A", w.resumeToken);
-  assertTurnCredentials(w2.iceServers[1], w.selfId);
-  assert.notEqual(w2.iceServers[1].username, w.iceServers[1].username);
-  await a.closed;
-  await b.close();
+  const w = await a.join(newRoom(), "A");
+  assert.deepEqual(w.iceServers, [{ urls: ["stun:localhost", "stun:stun.example.com:3478"] }]);
+  await a.close();
 });
 
-test("invalid STUN or TURN URLs stop the server at start", async () => {
+test("invalid STUN URLs stop the server at start", async () => {
   for (const [name, value] of [
-    ["SCREENSY_TURN_URLS", "turn://{host}"],
+    ["SCREENSY_STUN_URLS", "stun://{host}"],
     ["SCREENSY_STUN_URLS", "http://example.com"],
   ]) {
     // It exits before it listens, so port 4000 of the running server does not matter
@@ -197,11 +173,10 @@ test("a malformed Host header leaves out the {host} servers, and the server keep
   const room = newRoom();
   const bad = new Client("bad", { headers: { Host: "[" } });
   const w = await bad.join(room, "Bad");
-  // Every URL uses {host}, so there is nothing to list
-  assert.deepEqual(w.iceServers, []);
+  assert.deepEqual(w.iceServers, [{ urls: ["stun:stun.example.com:3478"] }]);
   const good = new Client("good");
   const w2 = await good.join(room, "Good");
-  assert.equal(w2.iceServers.length, 2);
+  assert.deepEqual(w2.iceServers, [{ urls: ["stun:localhost", "stun:stun.example.com:3478"] }]);
   await bad.close();
   await good.close();
 });

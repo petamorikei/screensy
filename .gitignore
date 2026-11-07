@@ -8,5 +8,5 @@ node_modules/
 # Go binary
 /screensy-website/screensy
 
-# Secrets for Docker Compose
+# Local settings for Docker Compose
 .env

@@ -98,12 +98,10 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
 // Messages from the server to the client
 
 /**
- * A STUN or TURN server, as RTCIceServer. A TURN server comes with a temporary username and credential.
+ * STUN servers, as RTCIceServer
  */
 const IceServerSchema = z.object({
   urls: z.array(z.string()).min(1),
-  username: z.string().optional(),
-  credential: z.string().optional(),
 });
 
 const WelcomeSchema = z.object({
@@ -116,7 +114,7 @@ const WelcomeSchema = z.object({
    */
   maxPresenters: z.number().int().positive(),
   /**
-   * The STUN and TURN servers for new WebRTC connections, chosen by the server's configuration
+   * The STUN servers for new WebRTC connections, chosen by the server's configuration
    */
   iceServers: z.array(IceServerSchema),
 });

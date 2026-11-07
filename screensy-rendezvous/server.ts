@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type {
   ClientMessage,
@@ -75,43 +75,23 @@ const MAX_NAME_LENGTH = 32;
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 
 /**
- * The STUN and TURN servers that clients use. "{host}" stands for the host name that the client connected to, like
+ * The STUN servers that clients use. "{host}" stands for the host name that the client connected to, like
  * location.hostname on the page. An empty variable turns them off, for example SCREENSY_STUN_URLS="" where the host
  * runs no STUN server.
  */
 const STUN_URLS = listFromEnv("SCREENSY_STUN_URLS", ["stun:{host}"]);
-const TURN_URLS = listFromEnv("SCREENSY_TURN_URLS", ["turn:{host}"]);
 
-/**
- * The secret shared with coturn (use-auth-secret, static-auth-secret). The server signs a temporary TURN username with
- * it for every "welcome". Without it, clients get no TURN server.
- */
-const TURN_SECRET = process.env.SCREENSY_TURN_SECRET || null;
+// The syntax of STUN URLs (RFC 7064): a scheme, a host and an optional port. A browser throws on anything else when it
+// creates a connection, which would break every connection without a message to the person who runs the server. So a
+// mistake stops the server at once.
+const STUN_URL = /^stuns?:(\[[0-9a-fA-F:.]+\]|[^\s:/?#[\]@]+)(:\d{1,5})?$/;
 
-/**
- * How long a temporary TURN username stays valid. A connection refreshes its relay with the username it started with,
- * so this has to outlast a long presentation.
- */
-const TURN_TTL_S = numberFromEnv("SCREENSY_TURN_TTL_S", 86_400);
+// {host} stands for a host name, so check the URLs with one in its place
+const INVALID_STUN_URLS = STUN_URLS.filter((url) => !STUN_URL.test(url.replaceAll("{host}", "example.com")));
 
-// The syntax of STUN and TURN URLs (RFC 7064 and 7065): a scheme, a host, an optional port and, for TURN, an optional
-// transport. A browser throws on anything else when it creates a connection, which would break every connection
-// without a message to the person who runs the server. So a mistake stops the server at once.
-const ICE_HOST = String.raw`(\[[0-9a-fA-F:.]+\]|[^\s:/?#[\]@]+)(:\d{1,5})?`;
-const STUN_URL = new RegExp(`^stuns?:${ICE_HOST}$`);
-const TURN_URL = new RegExp(String.raw`^turns?:${ICE_HOST}(\?transport=(udp|tcp))?$`);
-
-for (const [name, urls, pattern] of [
-  ["SCREENSY_STUN_URLS", STUN_URLS, STUN_URL],
-  ["SCREENSY_TURN_URLS", TURN_URLS, TURN_URL],
-] as const) {
-  // {host} stands for a host name, so check the URLs with one in its place
-  const invalid = urls.filter((url) => !pattern.test(url.replaceAll("{host}", "example.com")));
-
-  if (invalid.length > 0) {
-    console.error(`${name} has invalid URLs: ${invalid.join(", ")}`);
-    process.exit(1);
-  }
+if (INVALID_STUN_URLS.length > 0) {
+  console.error(`SCREENSY_STUN_URLS has invalid URLs: ${INVALID_STUN_URLS.join(", ")}`);
+  process.exit(1);
 }
 
 /**
@@ -162,10 +142,6 @@ const main = (): void => {
   }, PING_INTERVAL_MS);
 
   webSocketServer.on("close", () => clearInterval(heartbeat));
-
-  if (TURN_SECRET == null) {
-    console.warn("SCREENSY_TURN_SECRET is not set, so clients get no TURN server.");
-  }
 
   console.log(`Server started on port ${PORT}`);
 };
@@ -261,7 +237,7 @@ class Room {
       connectionId: participant.connectionId,
       resumeToken: participant.resumeToken,
       maxPresenters: MAX_PRESENTERS,
-      iceServers: iceServersFor(hostname, participant.id),
+      iceServers: iceServersFor(hostname),
     });
 
     this.broadcastState();
@@ -565,35 +541,18 @@ const hostnameOf = (host: string | undefined): string | null => {
 };
 
 /**
- * The STUN and TURN servers for a client. The TURN username follows the TURN REST API of coturn: the time it expires
- * (in Unix seconds), a colon and a name, signed with HMAC-SHA1 and the shared secret.
+ * The STUN servers for a client. URLs with "{host}" are left out when the host name is unknown.
  */
-const iceServersFor = (hostname: string | null, participantId: string): IceServer[] => {
-  // URLs with "{host}" are left out when the host name is unknown
-  const resolve = (urls: string[]): string[] =>
-    urls.flatMap((url) => {
-      if (!url.includes("{host}")) {
-        return [url];
-      }
+const iceServersFor = (hostname: string | null): IceServer[] => {
+  const urls = STUN_URLS.flatMap((url) => {
+    if (!url.includes("{host}")) {
+      return [url];
+    }
 
-      return hostname == null ? [] : [url.replaceAll("{host}", hostname)];
-    });
+    return hostname == null ? [] : [url.replaceAll("{host}", hostname)];
+  });
 
-  const servers: IceServer[] = [];
-  const stun = resolve(STUN_URLS);
-  const turn = resolve(TURN_URLS);
-
-  if (stun.length > 0) {
-    servers.push({ urls: stun });
-  }
-
-  if (TURN_SECRET != null && turn.length > 0) {
-    const username = `${Math.floor(Date.now() / 1000) + TURN_TTL_S}:${participantId}`;
-    const credential = createHmac("sha1", TURN_SECRET).update(username).digest("base64");
-    servers.push({ urls: turn, username, credential });
-  }
-
-  return servers;
+  return urls.length > 0 ? [{ urls }] : [];
 };
 
 /**

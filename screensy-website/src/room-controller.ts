@@ -34,8 +34,7 @@ export class RoomController {
   private readonly ui: Ui;
   private readonly signaling: SignalingConnection;
   /**
-   * The STUN and TURN servers from the latest "welcome". A TURN server comes with a temporary username, so new
-   * connections always take the latest one.
+   * The STUN servers from the latest "welcome". New connections always take the latest ones.
    */
   private rtcConfig: RTCConfiguration = { iceServers: [] };
   private readonly canPresent: boolean;
