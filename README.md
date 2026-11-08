@@ -6,10 +6,16 @@
 
 Screensy is a simple screen sharing solution. Nothing more, nothing less.
 
+This repository is a fork of [screensy/screensy](https://github.com/screensy/screensy).
+It adds several presenters at once, reconnection, quality settings and
+Cloudflare Workers, among other things; see [CHANGELOG.md](CHANGELOG.md). The
+setup below is for this fork.
+
 It consists of two parts, the rendezvous part which runs on the server, and the
 website part which runs in the user's browser. The rendezvous server is only
-used for protocol negotiation and discovery of viewers. The video stream is
-directly sent from the browser of the broadcaster to the browser of each viewer.
+used for protocol negotiation and discovery of the participants. The video
+stream is directly sent from the browser of each presenter to the browser of
+each viewer.
 All traffic (between rendezvous and browser and between browsers) is encrypted
 by default.
 
@@ -36,7 +42,7 @@ example between some mobile or company networks, the viewer gets no video. See
 3.  Clone this repository and navigate to it, using the following commands:
 
     ```sh
-    git clone https://github.com/screensy/screensy.git
+    git clone https://github.com/petamorikei/screensy.git
     cd screensy/
     ```
 
@@ -84,7 +90,7 @@ example between some mobile or company networks, the viewer gets no video. See
 2.  Clone this repository and navigate to it, using the following commands:
 
     ```sh
-    git clone https://github.com/screensy/screensy.git
+    git clone https://github.com/petamorikei/screensy.git
     cd screensy/
     ```
 
@@ -191,6 +197,38 @@ Things to know:
     [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
     in front of the Worker to restrict who can open it.
 
+## Updating
+
+The rooms live in the memory of the rendezvous server, so restarting it or
+deploying again ends every room: the browsers reconnect into new rooms, and the
+presenters have to start again.
+
+-   **With Docker**: Docker Compose builds the images from the repository, so
+    rebuild them after pulling:
+
+    ```sh
+    git pull
+    docker compose up -d --build
+    ```
+
+-   **Without Docker**: pull, install the toolchain and the dependencies again
+    (the pinned versions may have changed), rebuild the website, and restart
+    both servers:
+
+    ```sh
+    git pull
+    mise install && pnpm install
+    pnpm --filter screensy-website build
+    ```
+
+-   **On Cloudflare Workers**: pull, install, and deploy again:
+
+    ```sh
+    git pull
+    mise install && pnpm install
+    pnpm --filter screensy-cloudflare run cf:deploy
+    ```
+
 ## Optional: password-protect your screensy instance
 
 To password-protect your screensy instance, you can set up HTTP Basic
@@ -214,6 +252,9 @@ internet:
     caddy hash-password
     ```
 
+    With Docker, run it in the Caddy container instead:
+    `docker compose run --rm caddy caddy hash-password`.
+
     The command will ask you for a password and will then give you a hash. Make
     sure to copy this hash, because you need it in the next step.
 
@@ -231,9 +272,12 @@ internet:
 
     ```caddyfile
     basic_auth {
-        alice JDJhJDE0JDhkSmdoNy9BZ3BlZlRmSkFROHRUTE9jMW5jV1pUMVdZcW92WFdLVGZTcmFsL3RoeFR4OVlH
+        alice $2a$14$8dJgh7/AgpefTfJAQ8tTLOc1ncWZT1WYqovXWKTfSral/thxTx9YG
     }
     ```
+
+    Caddy reads the Caddyfile when it starts, so restart it after a change. With
+    Docker: `docker compose restart caddy`.
 
 4.  _Optional, more advanced_: You can add more username-hash pairs, or
     exclude certain IP adresses from needing authentication. For example, the
@@ -248,8 +292,8 @@ internet:
     }
 
     basic_auth @needauth {
-        alice JDJhJDE0JDhkSmdoNy9BZ3BlZlRmSkFROHRUTE9jMW5jV1pUMVdZcW92WFdLVGZTcmFsL3RoeFR4OVlH
-        bob JDJhJDE0JGJIZFRNNDVDOUVGN0pkLjdnc05CSXU4dGdKU2VvWFBKZUpjY0c3aFhRLldKYTRwNjVBYzVT
+        alice $2a$14$8dJgh7/AgpefTfJAQ8tTLOc1ncWZT1WYqovXWKTfSral/thxTx9YG
+        bob $2a$14$bHdTM45C9EF7Jd.7gsNBIu8tgJSeoXPJeJccG7hXQ.WJa4p65Ac5S
     }
     ```
 
