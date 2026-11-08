@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { configFromEnv } from "../screensy-rendezvous/rooms.ts";
 
 // The clients use the ws package of the rendezvous server: they need terminate() and the Host header, which the
 // built-in WebSocket of Node does not have
@@ -185,6 +186,11 @@ test("welcome lists the STUN servers, with {host} replaced", async () => {
   const w = await a.join(newRoom(), "A");
   assert.deepEqual(w.iceServers, [{ urls: ["stun:localhost", "stun:stun.example.com:3478"] }]);
   await a.close();
+});
+
+test("without SCREENSY_STUN_URLS, the clients get Cloudflare's public STUN server", () => {
+  assert.deepEqual(configFromEnv({}).config.stunUrls, ["stun:stun.cloudflare.com:3478"]);
+  assert.deepEqual(configFromEnv({ SCREENSY_STUN_URLS: "" }).config.stunUrls, []);
 });
 
 test(

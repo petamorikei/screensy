@@ -24,19 +24,3 @@ services:
     ports:
       - "443:443"
       - "80:80"
-  stun:
-    image: "coturn/coturn:4.18.0"
-    restart: unless-stopped
-    # STUN tells a browser the address that its packets come from, so coturn
-    # must see them unchanged: through Docker's port forwarding, it would see
-    # the forwarder's address. On macOS, the host network of Docker does not
-    # reach the tailnet either; run coturn from Homebrew there (see README).
-    network_mode: "host"
-    # Only STUN, without a configuration file. This also overrides the image's
-    # default command, which adds an auto-detected --external-ip.
-    command:
-      - "-n"
-      - "--stun-only"
-      - "--listening-port=3478"
-      - "--no-tls"
-      - "--log-file=stdout"

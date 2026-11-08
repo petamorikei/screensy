@@ -80,7 +80,6 @@ example between some mobile or company networks, the viewer gets no video. See
     -   [mise](https://mise.jdx.dev/), which installs the pinned versions of
         Node.js, pnpm and Go listed in "mise.toml"
     -   A reverse proxy that supports WebSocket (we recommend Caddy)
-    -   A STUN server (we recommend Coturn)
 
 2.  Clone this repository and navigate to it, using the following commands:
 
@@ -116,18 +115,9 @@ example between some mobile or company networks, the viewer gets no video. See
     ```
 
     This starts the webserver on port 8080. We do not use the standard port "80"
-    for this, as it will conflict with the reverse proxy we will set up in step 9.
+    for this, as it will conflict with the reverse proxy we will set up in step 8.
 
-7.  Set up the STUN server. We use Coturn with the following "turnserver.conf"
-    for this:
-
-    ```ini
-    listening-port=3478
-    stun-only
-    no-tls
-    ```
-
-8.  Start the rendezvous server, using the following command from the root of
+7.  Start the rendezvous server, using the following command from the root of
     the repository:
 
     ```sh
@@ -137,7 +127,7 @@ example between some mobile or company networks, the viewer gets no video. See
     This starts a WebSocket server on port 4000. See
     [STUN servers](#stun-servers) for its settings.
 
-9.  Reverse proxy both the static file server and the rendezvous server. We use
+8.  Reverse proxy both the static file server and the rendezvous server. We use
     the following Caddyfile for this:
 
     ```caddyfile
@@ -171,7 +161,7 @@ public STUN server.
     pnpm --filter screensy-cloudflare exec wrangler login
     ```
 
-3.  _Optional_: change the settings in "vars" of
+3.  _Optional_: add settings to "vars" in
     "screensy-cloudflare/wrangler.jsonc" (see [STUN servers](#stun-servers)).
 
 4.  Build and deploy:
@@ -267,26 +257,25 @@ internet:
 
 WebRTC connects the presenter and each viewer directly. A STUN server tells each
 browser its address as the other side sees it, so that browsers behind a router
-can find each other. Screensy has no TURN server to relay the video when no
-direct path works, for example between some mobile networks: those viewers get
-no video. The video never goes through a STUN server.
+can find each other. The video never goes through a STUN server. Screensy has
+no TURN server to relay the video when no direct path works, for example
+between some mobile networks: those viewers get no video.
 
-The rendezvous server tells the browsers which servers to use, from these
-environment variables (in ".env" with Docker Compose, and in "vars" of
-"wrangler.jsonc" on Cloudflare):
+By default, the browsers use Cloudflare's public STUN server,
+`stun:stun.cloudflare.com:3478`, which learns the IP addresses of the
+participants. The rendezvous server tells the browsers which servers to use,
+from these environment variables (in ".env" with Docker Compose, and in "vars"
+of "wrangler.jsonc" on Cloudflare):
 
-| Variable                  | Default       | Meaning                                                                                                        |
-| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
-| `SCREENSY_STUN_URLS`      | `stun:{host}` | STUN servers, comma-separated. `{host}` is the host name of the page. Set it to nothing to use no STUN server. |
-| `SCREENSY_MAX_PRESENTERS` | `4`           | The number of people that can present at the same time.                                                        |
+| Variable                  | Default                         | Meaning                                                                                                                |
+| ------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `SCREENSY_STUN_URLS`      | `stun:stun.cloudflare.com:3478` | STUN servers, comma-separated. `{host}` stands for the host name of the page. Set it to nothing to use no STUN server. |
+| `SCREENSY_MAX_PRESENTERS` | `4`                             | The number of people that can present at the same time.                                                                |
 
-On Cloudflare, the default is Cloudflare's STUN server,
-`stun:stun.cloudflare.com:3478`. A public STUN server like this one works where
-you cannot run your own, but it learns the IP addresses of the participants.
-
-Docker Compose runs Coturn as the STUN server (the "stun" service) on the host
-network: through Docker's port forwarding, it would see the address of the
-forwarder instead of the browser's.
+To use a STUN server of your own instead, for example Coturn with `stun-only`
+on the machine that runs screensy, set `SCREENSY_STUN_URLS=stun:{host}`. Run it
+on the host network: through Docker's port forwarding, it would see the address
+of the forwarder instead of the browser's.
 
 ### At home, with Tailscale
 
@@ -294,40 +283,23 @@ When screensy runs on a machine at home, Tailscale offers two ways to reach it.
 For both, change the first line of the Caddyfile to `:80`, so that Caddy serves
 plain HTTP and Tailscale provides HTTPS.
 
--   **Only inside your tailnet**: run `tailscale serve --bg 80`, and keep the
-    default `stun:{host}`. Inside the tailnet, the name of the page resolves to
-    the Tailscale address of the machine, so the browsers learn their Tailscale
-    addresses from the STUN server, and Tailscale connects them wherever they
-    are.
+-   **Only inside your tailnet**: run `tailscale serve --bg 80`.
+-   **Public, with Tailscale Funnel**: run `tailscale funnel --bg 80`.
 
--   **Public, with Tailscale Funnel**: run `tailscale funnel --bg 80`. Funnel
-    only forwards TLS connections over TCP, so viewers outside your tailnet
-    cannot reach your STUN server. Add a public one for them, in ".env":
+Either way, Tailscale only carries the page and the WebSocket connection. The
+browsers connect to each other over their public addresses, as with any other
+server, and the people in your tailnet need a direct path just like everyone
+else.
 
-    ```sh
-    SCREENSY_STUN_URLS=stun:{host},stun:stun.cloudflare.com:3478
-    ```
-
-    The people in your tailnet still use yours.
-
-On macOS, the host network of Docker (Docker Desktop, OrbStack) is a virtual
-machine that the tailnet does not reach. Run Coturn from Homebrew instead, with
-the "turnserver.conf" of
-[Server Setup (Without Docker)](#server-setup-without-docker) in
-`$(brew --prefix)/etc/turnserver.conf`:
-
-```sh
-brew install coturn
-brew services start coturn
-```
-
-and leave the "stun" service out with a "docker-compose.override.yaml":
-
-```yaml
-services:
-  stun:
-    profiles: ["stun"]
-```
+A STUN server of your own on that machine would change this for the people in
+your tailnet: inside the tailnet, `stun:{host}` resolves to the Tailscale
+address of the machine, so the browsers learn their Tailscale addresses, and
+Tailscale connects them wherever they are. Viewers outside the tailnet cannot
+reach it through Funnel, which only forwards TLS over TCP, so keep the public
+one for them too (`stun:{host},stun:stun.cloudflare.com:3478`). On macOS, run
+that STUN server outside Docker, for example from Homebrew: the host network of
+Docker Desktop and OrbStack is a virtual machine that the tailnet does not
+reach.
 
 ## Bandwidth
 
@@ -345,4 +317,3 @@ The following ports need to be accessible by the client for screensy to work
 | ----------- | -------- | ------- |
 | 80          | TCP      | HTTP    |
 | 443         | TCP      | HTTPS   |
-| 3478        | TCP/UDP  | STUN    |

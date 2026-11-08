@@ -52,7 +52,7 @@ export interface RoomConfig {
   readonly maxPresenters: number;
   /**
    * The STUN servers that clients use. "{host}" stands for the host name that the client connected to, like
-   * location.hostname on the page.
+   * location.hostname on the page, for a STUN server on the machine that runs screensy.
    */
   readonly stunUrls: readonly string[];
 }
@@ -100,8 +100,9 @@ const STUN_URL = /^stuns?:(\[[0-9a-fA-F:.]+\]|[^\s:/?#[\]@]+)(:\d{1,5})?$/;
  * Reads the configuration from the SCREENSY_* variables. The errors describe the variables that are invalid.
  */
 export const configFromEnv = (env: Env): { config: RoomConfig; errors: string[] } => {
-  // An empty variable turns STUN off, for example SCREENSY_STUN_URLS="" where the host runs no STUN server
-  const stunUrls = listFromEnv(env, "SCREENSY_STUN_URLS", ["stun:{host}"]);
+  // Cloudflare's public STUN server by default. An empty variable turns STUN off, for example in tests that must not
+  // reach the internet.
+  const stunUrls = listFromEnv(env, "SCREENSY_STUN_URLS", ["stun:stun.cloudflare.com:3478"]);
   // {host} stands for a host name, so check the URLs with one in its place
   const invalid = stunUrls.filter((url) => !STUN_URL.test(url.replaceAll("{host}", "example.com")));
 
