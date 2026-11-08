@@ -14,9 +14,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     rendezvous server in a Durable Object (`pnpm --filter screensy-cloudflare
     run cf:deploy`).
 -   The STUN servers can be chosen with an environment variable of the
-    rendezvous server (`SCREENSY_STUN_URLS`), for example a public STUN server
-    or the Tailscale name of a machine at home. The README explains how to run
-    screensy inside a tailnet or with Tailscale Funnel.
+    rendezvous server (`SCREENSY_STUN_URLS`). The default is Cloudflare's
+    public STUN server. The README explains how to run screensy inside a
+    tailnet or with Tailscale Funnel.
 -   Anyone in a room can start presenting at any time with the "Present"
     button. Up to four people can present at once, shown side by side; a
     click enlarges one of them. When the room is full of presenters, the start
@@ -91,7 +91,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   Update `golang.org/x/text` to 0.43.0 and add the missing "go.sum".
 -   Update the Docker images to Node.js 26, Go 1.27 and Alpine 3.24. They are
     now built from the root of the repository.
--   Update Caddy to 2.11.7 and coturn to 4.18.0.
+-   Update Caddy to 2.11.7.
 -   The rooms of the rendezvous server live in "rooms.ts", which runs both on
     Node.js and in the Durable Object.
 -   Use `basic_auth` instead of the deprecated `basicauth` in the Caddyfile.
@@ -105,10 +105,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Removed
 
--   Remove the TURN relay. Coturn only runs as a STUN server now, on the host
-    network, so "turnserver.conf" and its fixed username and password are
-    gone. Viewers who find no direct path to the presenter, for example on
-    some mobile networks, get no video.
+-   Remove coturn, the STUN and TURN server, from the Docker setup, with
+    "turnserver.conf" and its fixed username and password. The browsers use
+    Cloudflare's public STUN server instead, and nothing relays the video:
+    viewers who find no direct path to the presenter, for example on some
+    mobile networks, get no video.
 -   Remove the Chinese, Czech, Dutch, French, German, Hebrew and Portuguese
     translations. Screensy is now available in English and Japanese only.
 

@@ -442,6 +442,8 @@ const main = async () => {
         SCREENSY_LEFT_GRACE_MS: "12000",
         SCREENSY_LOST_GRACE_MS: "60000",
         SCREENSY_MAX_PRESENTERS: maxPresenters,
+        // No STUN server: the pages connect on this machine, so the test does not reach the internet
+        SCREENSY_STUN_URLS: "",
         ...env,
       },
     });

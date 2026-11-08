@@ -17,8 +17,5 @@
   },
   // The Workers Free plan only has Durable Objects with SQLite storage. The rooms live in memory and store nothing.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Rendezvous"] }],
-  "vars": {
-    "SCREENSY_STUN_URLS": "stun:stun.cloudflare.com:3478"
-  },
   "observability": { "enabled": true }
 }
