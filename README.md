@@ -19,13 +19,93 @@ each viewer.
 All traffic (between rendezvous and browser and between browsers) is encrypted
 by default.
 
-There are three ways to set up screensy: with Docker, without Docker, or on
-Cloudflare Workers. If you don't know which one to choose, we recommend using
-Docker on a server of your own, or Cloudflare Workers if you have no server.
+## Quick start
+
+Choose who can open screensy:
+
+| Setup                                                                          | Who can open it                       | What you need                       |
+| ------------------------------------------------------------------------------ | ------------------------------------- | ----------------------------------- |
+| [Only inside your tailnet](#inside-your-tailnet-or-with-tailscale-funnel)      | The devices in your Tailscale network | A machine with Docker and Tailscale |
+| [Public, with Tailscale Funnel](#inside-your-tailnet-or-with-tailscale-funnel) | Anyone with the link                  | A machine with Docker and Tailscale |
+| [Public, on Cloudflare Workers](#on-cloudflare-workers)                        | Anyone with the link                  | A Cloudflare account (free plan)    |
 
 Screensy does not relay the video: when two browsers find no direct path, for
 example between some mobile or company networks, the viewer gets no video. See
 [STUN servers](#stun-servers).
+
+For a server of your own with a domain, see
+[Server Setup (With Docker)](#server-setup-with-docker) and
+[Server Setup (Without Docker)](#server-setup-without-docker).
+
+### Inside your tailnet, or with Tailscale Funnel
+
+On a machine with [Docker](https://docs.docker.com/engine/install/) (Docker
+Compose 2.24 or later) and [Tailscale](https://tailscale.com/download):
+
+1.  Clone this repository:
+
+    ```sh
+    git clone https://github.com/petamorikei/screensy.git
+    cd screensy/
+    ```
+
+2.  Use the settings for Tailscale, "docker-compose.tailscale.yaml" and
+    "Caddyfile.tailscale": Caddy then serves plain HTTP on localhost:80 only,
+    and Tailscale provides HTTPS.
+
+    ```sh
+    echo "COMPOSE_FILE=docker-compose.yaml:docker-compose.tailscale.yaml" > .env
+    ```
+
+3.  _With Funnel_: anyone on the internet can open the page, so protect it
+    with a password in "Caddyfile.tailscale"; see
+    [password-protect your screensy instance](#optional-password-protect-your-screensy-instance).
+
+4.  Start screensy:
+
+    ```sh
+    docker compose up -d
+    ```
+
+5.  Share it through Tailscale, with one of these commands (on Linux, with
+    `sudo`):
+
+    ```sh
+    tailscale serve --bg 80    # only inside your tailnet
+    tailscale funnel --bg 80   # public
+    ```
+
+    The first time, Tailscale asks you to enable HTTPS certificates (and
+    Funnel) for your tailnet, with a link to the admin console.
+
+Screensy is then at `https://<machine name>.<tailnet name>.ts.net/`, which
+`tailscale serve status` shows. `tailscale serve reset` stops sharing it, with
+everything else that Tailscale serves on this machine.
+
+### On Cloudflare Workers
+
+With [mise](https://mise.jdx.dev/) activated in your shell:
+
+1.  Clone this repository, and install the toolchain and the dependencies:
+
+    ```sh
+    git clone https://github.com/petamorikei/screensy.git
+    cd screensy/
+    mise install
+    pnpm install
+    ```
+
+2.  Log in to Cloudflare, and deploy:
+
+    ```sh
+    pnpm --filter screensy-cloudflare exec wrangler login
+    pnpm --filter screensy-cloudflare run cf:deploy
+    ```
+
+Screensy is then at the address that Wrangler prints, such as
+`https://screensy.<your-subdomain>.workers.dev`. Anyone with the link can open
+it; see [Setup on Cloudflare Workers](#setup-on-cloudflare-workers) for how to
+restrict it, and for the limits of the free plan.
 
 ## Server Setup (With Docker)
 
@@ -258,8 +338,8 @@ internet:
     The command will ask you for a password and will then give you a hash. Make
     sure to copy this hash, because you need it in the next step.
 
-3.  Uncomment the following lines in the Caddyfile, and replace the username and
-    hash.
+3.  Uncomment the following lines in the Caddyfile ("Caddyfile.tailscale" with
+    Tailscale), and replace the username and hash.
 
     ```caddyfile
     basic_auth {
@@ -321,16 +401,11 @@ on the machine that runs screensy, set `SCREENSY_STUN_URLS=stun:{host}`. Run it
 on the host network: through Docker's port forwarding, it would see the address
 of the forwarder instead of the browser's.
 
-### At home, with Tailscale
+### With Tailscale
 
-When screensy runs on a machine at home, Tailscale offers two ways to reach it.
-For both, change the first line of the Caddyfile to `:80`, so that Caddy serves
-plain HTTP and Tailscale provides HTTPS.
-
--   **Only inside your tailnet**: run `tailscale serve --bg 80`.
--   **Public, with Tailscale Funnel**: run `tailscale funnel --bg 80`.
-
-Either way, Tailscale only carries the page and the WebSocket connection. The
+In the [quick start with Tailscale](#inside-your-tailnet-or-with-tailscale-funnel),
+inside the tailnet and with Funnel alike, Tailscale only carries the page and
+the WebSocket connection. The
 browsers connect to each other over their public addresses, as with any other
 server, and the people in your tailnet need a direct path just like everyone
 else.
@@ -355,7 +430,8 @@ bitrate or the resolution in the menu when the connections are slow.
 ## Ports
 
 The following ports need to be accessible by the client for screensy to work
-(not on Cloudflare):
+on a server of your own (not with Tailscale, which only uses localhost:80, and
+not on Cloudflare):
 
 | Port number | Protocol | Service |
 | ----------- | -------- | ------- |
