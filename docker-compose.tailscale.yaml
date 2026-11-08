@@ -1,0 +1,11 @@
+# For Tailscale (tailscale serve or tailscale funnel), on top of
+# docker-compose.yaml. Set COMPOSE_FILE in ".env" (see ".env.example") to use
+# it with every docker compose command.
+services:
+  caddy:
+    # Tailscale forwards to localhost:80, so Caddy only listens there: no 443,
+    # and nothing reachable from the local network
+    ports: !override
+      - "127.0.0.1:80:80"
+    volumes: !override
+      - ./Caddyfile.tailscale:/etc/caddy/Caddyfile

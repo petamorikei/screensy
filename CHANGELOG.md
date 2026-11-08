@@ -15,8 +15,12 @@ The format is based on [Keep a Changelog], and this project adheres to
     run cf:deploy`).
 -   The STUN servers can be chosen with an environment variable of the
     rendezvous server (`SCREENSY_STUN_URLS`). The default is Cloudflare's
-    public STUN server. The README explains how to run screensy inside a
-    tailnet or with Tailscale Funnel.
+    public STUN server.
+-   A quick start at the top of the README, for three setups: inside a
+    tailnet, public with Tailscale Funnel, and on Cloudflare Workers. For
+    Tailscale, "docker-compose.tailscale.yaml" and "Caddyfile.tailscale" make
+    Caddy serve plain HTTP on localhost:80 only, selected with `COMPOSE_FILE`
+    in ".env".
 -   Anyone in a room can start presenting at any time with the "Present"
     button. Up to four people can present at once, shown side by side; a
     click enlarges one of them. When the room is full of presenters, the start

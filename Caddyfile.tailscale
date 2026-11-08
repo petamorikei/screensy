@@ -1,0 +1,17 @@
+# For Tailscale (tailscale serve or tailscale funnel), with
+# docker-compose.tailscale.yaml: Tailscale provides HTTPS and forwards plain
+# HTTP to localhost:80, so Caddy only serves HTTP.
+:80 {
+	# basic_auth {
+	# 	<username> <hash>
+	# }
+
+	reverse_proxy website:8080
+
+	@rendezvous {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+
+	reverse_proxy @rendezvous rendezvous:4000
+}
