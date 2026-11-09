@@ -1,11 +1,13 @@
 import type { MessageRoomState, MessageSignalFromServer, MessageWelcome, ServerMessage } from "screensy-protocol";
 import { BLUR_STORAGE_KEY, isBlurSupported, readBlurStrength } from "./blur.ts";
+import { CallController } from "./call-controller.ts";
 import { capturesOwnAudio } from "./capture.ts";
 import { Chat } from "./chat.ts";
-import type { ChatMessage } from "./chat-protocol.ts";
+import type { ChatFile, ChatMessage } from "./chat-protocol.ts";
 import { showPopup } from "./dom.ts";
+import { FileTransfers } from "./file-transfer.ts";
+import { formatBytes } from "./format.ts";
 import { IncomingStream } from "./incoming-stream.ts";
-import { MICROPHONE_CONSTRAINTS, OutgoingCall } from "./outgoing-call.ts";
 import { OutgoingStream } from "./outgoing-stream.ts";
 import { PeerMesh } from "./peer-mesh.ts";
 import type { QualitySettings } from "./quality.ts";
@@ -23,8 +25,9 @@ import {
   writeStorage,
 } from "./storage.ts";
 import type { TileContext } from "./tile-views.ts";
-import { ownTile, tileViews } from "./tile-views.ts";
+import { cameraTileViews, ownTile, tileViews } from "./tile-views.ts";
 import type { EchoChoice } from "./ui/call-panel.ts";
+import type { ChatFileView } from "./ui/chat-panel.ts";
 import type { DialogMode, StatusId, TileView } from "./ui/types.ts";
 import { Ui } from "./ui/ui.ts";
 
@@ -69,6 +72,12 @@ export class RoomController {
    */
   private readonly mesh: PeerMesh;
   private readonly chat: Chat;
+  private readonly files: FileTransfers;
+
+  /**
+   * The chat messages as the chat last showed them, to show them again when a file transfer changes
+   */
+  private chatMessages: readonly ChatMessage[] = [];
 
   /**
    * The room state before the current one, to tell who took over a seat
@@ -92,21 +101,9 @@ export class RoomController {
   private readonly incoming = new Map<string, IncomingStream>();
 
   /**
-   * This client's part of the voice call, while it is in the call
+   * This client's part of the call
    */
-  private call: OutgoingCall | null = null;
-
-  /**
-   * "joincall" was sent, and no room state has had this client's call since
-   */
-  private awaitingCall = false;
-
-  /**
-   * Asking for the microphone after a click on "Join call"
-   */
-  private joiningCall = false;
-
-  private readonly canCall: boolean;
+  private readonly calls: CallController;
 
   /**
    * The choice about the shared sound, which belongs to one capture: a new screen asks again
@@ -164,7 +161,6 @@ export class RoomController {
     this.roomId = roomId.toLowerCase();
     this.offerToPresent = isCreator;
     this.canPresent = "getDisplayMedia" in navigator.mediaDevices;
-    this.canCall = "getUserMedia" in navigator.mediaDevices;
     this.ui = new Ui();
     this.quality = readQuality();
     this.ui.menu.setQuality(this.quality);
@@ -181,16 +177,30 @@ export class RoomController {
       this.chat.handlePeerOpen(peerId);
       this.render();
     };
-    this.mesh.onclose = () => this.render();
+    this.files = new FileTransfers(this.mesh, this.chat.authorId);
+    this.mesh.onclose = (peerId: string) => {
+      this.files.handleClose(peerId);
+      this.render();
+    };
     this.mesh.onmessage = (peerId: string, data: string) => this.chat.handleData(peerId, data);
+    this.mesh.onfilesopen = (peerId: string) => this.files.handleOpen(peerId);
+    this.mesh.onfilesmessage = (peerId: string, data: string | ArrayBuffer) => this.files.handleMessage(peerId, data);
+    this.files.onchange = () => this.showChat(this.chatMessages);
     this.chat.onchange = (messages: readonly ChatMessage[]) => this.showChat(messages);
+    this.ui.chat.onattach = (file: File) => this.attachFile(file);
+    this.ui.chat.ondownload = (fileId: string) => this.downloadFile(fileId);
+    this.ui.chat.oncanceldownload = (fileId: string) => this.files.cancel(fileId);
     this.chat.onlive = () => this.ui.chat.addUnread();
     this.ui.chat.onsend = (text: string) => this.sendChat(text);
-    this.ui.call.onjoin = () => this.joinCall();
-    this.ui.call.onleave = () => this.leaveCall();
-    this.ui.call.onmute = (muted: boolean) => this.setCallMuted(muted);
+    this.calls = new CallController({
+      ui: this.ui,
+      sendMessage: this.sendMessage,
+      rtcConfig: () => this.rtcConfig,
+      render: () => this.render(),
+      room: () => (this.state == null || this.selfId == null ? null : { state: this.state, selfId: this.selfId }),
+      incoming: (streamId: string) => this.incoming.get(streamId),
+    });
     this.ui.call.onechochoice = (choice: EchoChoice) => this.chooseEcho(choice);
-    this.ui.callAudio.onblocked = () => this.ui.notices.showNotice("notice-call-audio-blocked");
 
     this.signaling.onopen = () => this.join();
     this.signaling.onclose = () => this.render();
@@ -223,8 +233,8 @@ export class RoomController {
     this.signaling.close();
     this.mesh.reset();
     this.chat.close();
-    this.call?.stop();
-    this.call = null;
+    this.files.close();
+    this.calls.stop();
   }
 
   private get resumeStorageKey(): string {
@@ -277,6 +287,9 @@ export class RoomController {
         }
 
         break;
+      case "camerarejected":
+        this.calls.handleCameraRejected();
+        break;
       case "replaced":
         // Another tab uses this participant. Join as a new participant when the server closes this socket.
         writeStorage(getSessionStorage, this.resumeStorageKey, null);
@@ -297,9 +310,7 @@ export class RoomController {
     this.outgoing = null;
     this.resolveOnNextState = false;
     // The other tab has to join the call itself
-    this.call?.stop();
-    this.call = null;
-    this.awaitingCall = false;
+    this.calls.stop();
 
     if (this.dialogMode === "resume") {
       this.dialogMode = null;
@@ -332,12 +343,7 @@ export class RoomController {
       this.resolveOnNextState = true;
     }
 
-    if (this.call != null) {
-      // The server drops the call with the old socket. The microphone is still here, so join again.
-      this.call.reset();
-      this.sendMessage({ type: "joincall", muted: this.call.muted });
-      this.awaitingCall = true;
-    }
+    this.calls.handleWelcome();
   }
 
   private handleRoomState(state: MessageRoomState): void {
@@ -371,7 +377,7 @@ export class RoomController {
       this.mesh.sync(state.participants, selfId, this.connectionId);
     }
 
-    this.syncCall(state, selfId);
+    this.calls.handleRoomState(state, selfId);
 
     if (this.outgoing != null) {
       if (this.outgoing.streamId == null) {
@@ -442,8 +448,7 @@ export class RoomController {
       return;
     }
 
-    if (this.call != null && message.streamId === this.call.streamId) {
-      this.call.handleSignal(message).catch((error) => console.warn("Could not handle a signal.", error));
+    if (this.calls.handleSignal(message)) {
       return;
     }
 
@@ -637,107 +642,6 @@ export class RoomController {
   }
 
   /**
-   * Asks for the microphone and joins the call. Called from the click on "Join call".
-   */
-  private joinCall(): void {
-    if (this.call != null || this.joiningCall || !this.canCall) {
-      return;
-    }
-
-    // Call getUserMedia before anything else, while the click still counts as a user activation
-    let microphone: Promise<MediaStream>;
-
-    try {
-      microphone = navigator.mediaDevices.getUserMedia(MICROPHONE_CONSTRAINTS);
-    } catch (error) {
-      microphone = Promise.reject(error);
-    }
-
-    this.joiningCall = true;
-    this.render();
-
-    microphone.then(
-      (mediaStream: MediaStream) => {
-        this.joiningCall = false;
-        const call = new OutgoingCall(mediaStream, () => this.rtcConfig, this.sendMessage);
-        this.call = call;
-
-        // For example when the microphone is unplugged
-        for (const track of mediaStream.getAudioTracks()) {
-          track.addEventListener("ended", () => {
-            if (this.call === call) {
-              this.leaveCall();
-            }
-          });
-        }
-
-        // If the socket is down, this message is lost, and the next "welcome" sends it again
-        this.sendMessage({ type: "joincall", muted: false });
-        this.awaitingCall = true;
-        this.render();
-      },
-      () => {
-        this.joiningCall = false;
-        this.ui.notices.showNotice("notice-microphone-denied");
-        this.render();
-      },
-    );
-  }
-
-  private leaveCall(): void {
-    if (this.call == null) {
-      return;
-    }
-
-    this.sendMessage({ type: "leavecall" });
-    this.call.stop();
-    this.call = null;
-    this.awaitingCall = false;
-    this.render();
-  }
-
-  private setCallMuted(muted: boolean): void {
-    if (this.call == null) {
-      return;
-    }
-
-    this.call.setMuted(muted);
-    this.sendMessage({ type: "callstate", muted });
-    this.render();
-  }
-
-  /**
-   * Keeps this client's call as the room state has it: the stream ID comes from there, and a call that the server
-   * dropped, for example with a replaced socket, is joined again.
-   */
-  private syncCall(state: MessageRoomState, selfId: string): void {
-    const own = state.calls.find((call) => call.participantId === selfId);
-    const call = this.call;
-
-    if (call == null) {
-      if (own != null) {
-        this.sendMessage({ type: "leavecall" });
-      }
-
-      return;
-    }
-
-    if (own == null) {
-      // Unless the "joincall" is still on its way
-      if (!this.awaitingCall) {
-        this.sendMessage({ type: "joincall", muted: call.muted });
-        this.awaitingCall = true;
-      }
-
-      return;
-    }
-
-    this.awaitingCall = false;
-    call.adopt(own.streamId);
-    call.sync(state.participants, selfId);
-  }
-
-  /**
    * Remembers the choice about the shared sound for the current capture
    */
   private chooseEcho(choice: EchoChoice): void {
@@ -771,15 +675,79 @@ export class RoomController {
     return this.chat.send(text, self.id, self.name);
   }
 
+  /**
+   * Shares a file in the chat: the others ask this page for it
+   */
+  private attachFile(file: File): boolean {
+    const self = this.state?.participants.find((participant) => participant.id === this.selfId);
+
+    if (self == null) {
+      return false;
+    }
+
+    const shared: ChatFile = {
+      id: this.files.share(file),
+      // Within the limits of the chat message; the size and the content are not limited
+      name: file.name.slice(0, 255) || "file",
+      size: file.size,
+      type: file.type.slice(0, 255),
+    };
+
+    return this.chat.send("", self.id, self.name, shared);
+  }
+
+  private downloadFile(fileId: string): void {
+    const message = this.chatMessages.find((message) => message.file?.id === fileId);
+
+    if (message?.file != null) {
+      this.files.download(message.authorId, message.file);
+    }
+  }
+
   private showChat(messages: readonly ChatMessage[]): void {
+    this.chatMessages = messages;
     this.ui.chat.showMessages(
       messages.map((message) => ({
         name: this.ui.displayName(message.name, message.participantId),
         sentAt: message.sentAt,
         text: message.text,
         self: this.chat.isOwn(message),
+        file: message.file == null ? null : this.fileView(message, message.file),
       })),
     );
+  }
+
+  /**
+   * What this page can do with the file of a message
+   */
+  private fileView(message: ChatMessage, file: ChatFile): ChatFileView {
+    const view: ChatFileView = {
+      id: file.id,
+      name: file.name,
+      size: formatBytes(file.size),
+      status: "idle",
+      progress: 0,
+      url: null,
+    };
+
+    if (this.chat.isOwn(message)) {
+      return { ...view, status: "own" };
+    }
+
+    const state = this.files.state(file.id);
+
+    switch (state.status) {
+      case "receiving":
+        return { ...view, status: "receiving", progress: state.size === 0 ? 1 : state.received / state.size };
+      case "done":
+        return { ...view, status: "done", url: state.url };
+      default:
+        if (!this.files.isReachable(message.authorId)) {
+          return { ...view, status: "unreachable" };
+        }
+
+        return { ...view, status: state.status };
+    }
   }
 
   private showParticipants(state: MessageRoomState, selfId: string): void {
@@ -800,7 +768,19 @@ export class RoomController {
     );
   }
 
+  /**
+   * The name of a connection of the call in the statistics
+   */
+  private callName(participantId: string): string {
+    return this.ui.callStatsName(this.nameOf(participantId));
+  }
+
   private toggleStats(open: boolean): void {
+    if (open) {
+      // The names of the devices show once the page may use them
+      void this.calls.refreshDevices();
+    }
+
     if (open && this.statsTimer == null) {
       this.statsTimer = window.setInterval(() => void this.updateStats(), STATS_INTERVAL_MS);
       void this.updateStats();
@@ -825,6 +805,23 @@ export class RoomController {
 
       for (const { participantId, connection } of this.outgoing?.connections() ?? []) {
         targets.push({ name: this.nameOf(participantId), direction: "send", connection });
+      }
+
+      // The call: what this client sends, and what it receives from the others in the call
+      for (const { participantId, connection } of this.calls.connections()) {
+        targets.push({ name: this.callName(participantId), direction: "send", connection });
+      }
+
+      for (const call of this.state?.calls ?? []) {
+        const stream = this.incoming.get(call.streamId);
+
+        if (call.participantId !== this.selfId && stream != null) {
+          targets.push({
+            name: this.callName(call.participantId),
+            direction: "receive",
+            connection: stream.connection,
+          });
+        }
       }
 
       for (const presenter of this.state?.presenters ?? []) {
@@ -958,7 +955,7 @@ export class RoomController {
   private render(): void {
     const state = this.state;
     const ready = this.signaling.isOpen && state != null && this.selfId != null;
-    const tiles = ready ? tileViews(this.tileContext(), state) : [];
+    const tiles = ready ? [...tileViews(this.tileContext(), state), ...cameraTileViews(this.tileContext(), state)] : [];
 
     // While the server is away, only the own preview stays
     if (!ready && this.outgoing != null) {
@@ -981,7 +978,7 @@ export class RoomController {
     this.ui.notices.showStatus(status);
     this.ui.chat.setEnabled(ready && this.chat.ready);
     this.ui.chat.setReach(this.mesh.openPeers().length, this.mesh.targetCount);
-    this.showCall(ready);
+    this.calls.show(ready, (participantId) => this.nameOf(participantId));
     this.updateEchoProtection(tiles);
 
     const counting = tiles.some((tile) => tile.countdown != null);
@@ -1018,31 +1015,9 @@ export class RoomController {
       incomingStream: (streamId) => this.incoming.get(streamId)?.mediaStream ?? null,
       nameOf: (participantId) => this.nameOf(participantId),
       graceDeadline: (participantId) => this.graceDeadlines.get(participantId),
+      ownCamera: this.calls.ownCamera,
+      speaking: (participantId) => this.calls.isSpeaking(participantId),
     };
-  }
-
-  /**
-   * The buttons and the participants of the call, and the call's sound. The sound keeps playing while the server is
-   * away, from the last room state: it goes from browser to browser.
-   */
-  private showCall(ready: boolean): void {
-    const calls = this.state?.calls ?? [];
-
-    this.ui.callAudio.show(
-      calls.flatMap((call) => {
-        const stream = call.participantId === this.selfId ? null : this.incoming.get(call.streamId)?.mediaStream;
-        return stream == null ? [] : [{ key: call.streamId, stream }];
-      }),
-    );
-
-    this.ui.call.show({
-      ready,
-      supported: this.canCall,
-      joined: this.call != null,
-      joining: this.joiningCall,
-      muted: this.call?.muted ?? false,
-      members: ready ? calls.map((call) => ({ name: this.nameOf(call.participantId), muted: call.muted })) : [],
-    });
   }
 
   /**

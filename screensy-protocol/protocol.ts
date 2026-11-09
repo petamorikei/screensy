@@ -81,12 +81,14 @@ const StreamStateSchema = z.object({
 });
 
 /**
- * Joins the voice call. Every participant in the call sends a stream of their microphone to everyone in the room,
- * including those who are not in the call. A participant already in the call joins again with a new stream.
+ * Joins the call. Every participant in the call sends a stream of their microphone, and of their camera while it is on,
+ * to everyone in the room, including those who are not in the call. A participant already in the call joins again with
+ * a new stream. The camera is subject to the limit of cameras, like in "callstate".
  */
 const JoinCallSchema = z.object({
   type: z.literal("joincall"),
   muted: z.boolean(),
+  camera: z.boolean(),
 });
 
 const LeaveCallSchema = z.object({
@@ -94,11 +96,13 @@ const LeaveCallSchema = z.object({
 });
 
 /**
- * Whether the sender's microphone is muted. Ignored if the sender is not in the call.
+ * Whether the sender's microphone is muted and their camera is on. Ignored if the sender is not in the call. A camera
+ * beyond the limit of cameras stays off, and the server answers "camerarejected".
  */
 const CallStateToServerSchema = z.object({
   type: z.literal("callstate"),
   muted: z.boolean(),
+  camera: z.boolean(),
 });
 
 /**
@@ -163,6 +167,10 @@ const WelcomeSchema = z.object({
    */
   maxPresenters: z.number().int().positive(),
   /**
+   * The number of cameras that can be on at the same time
+   */
+  maxCameras: z.number().int().positive(),
+  /**
    * The STUN servers for new WebRTC connections, chosen by the server's configuration
    */
   iceServers: z.array(IceServerSchema),
@@ -198,12 +206,13 @@ const PresenterStateSchema = z.object({
 });
 
 /**
- * A participant in the voice call and the stream of their microphone
+ * A participant in the call and the stream of their microphone and camera
  */
 const CallStateSchema = z.object({
   participantId: z.string(),
   streamId: z.string(),
   muted: z.boolean(),
+  camera: z.boolean(),
 });
 
 const RoomStateSchema = z.object({
@@ -256,6 +265,13 @@ const PresentRejectedSchema = z.object({
 });
 
 /**
+ * The room has reached the limit of cameras: the sender's camera stays off
+ */
+const CameraRejectedSchema = z.object({
+  type: z.literal("camerarejected"),
+});
+
+/**
  * The heartbeat. The client answers "pong". A client that sends nothing between two pings is dropped. The server sends
  * it, because browsers delay the timers of background tabs, but not the messages that they receive.
  */
@@ -278,6 +294,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   MeshSignalFromServerSchema,
   PresentAcceptedSchema,
   PresentRejectedSchema,
+  CameraRejectedSchema,
   ReplacedSchema,
 ]);
 

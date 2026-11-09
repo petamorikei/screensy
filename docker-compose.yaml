@@ -11,6 +11,7 @@ services:
     environment:
       - SCREENSY_STUN_URLS
       - SCREENSY_MAX_PRESENTERS
+      - SCREENSY_MAX_CAMERAS
   website:
     build:
       context: .

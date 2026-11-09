@@ -9,6 +9,11 @@ import type { MessageSender } from "./signaling.ts";
 const CHAT_CHANNEL_ID = 0;
 
 /**
+ * The data channel of the files, beside the chat, so that a large file never holds up the chat messages
+ */
+const FILES_CHANNEL_ID = 1;
+
+/**
  * How long the offering side waits before it rebuilds a connection that failed, and how often it tries. Without a
  * TURN relay, two browsers without a direct path never connect, so it gives up until one of them reconnects.
  */
@@ -26,6 +31,7 @@ interface MeshPeer {
   connectionId: string;
   link: PeerLink;
   channel: RTCDataChannel;
+  files: RTCDataChannel;
   /**
    * Whether onopen was reported, so that onclose is reported once and only after it
    */
@@ -33,15 +39,20 @@ interface MeshPeer {
 }
 
 /**
- * The connections without media between this client and every other connected participant, for the chat. Each pair
- * has one connection, keyed by participant ID and connection ID like the streams: a new connection ID rebuilds it.
- * Of the two sides, the one with the greater connection ID (compared as strings: any order on which both sides agree
- * will do) sends the offer.
+ * The connections without media between this client and every other connected participant, for the chat and the
+ * files. Each pair has one connection, keyed by participant ID and connection ID like the streams: a new connection ID
+ * rebuilds it. Of the two sides, the one with the greater connection ID (compared as strings: any order on which both
+ * sides agree will do) sends the offer.
  */
 export class PeerMesh {
   public onopen: ((peerId: string) => void) | null = null;
   public onclose: ((peerId: string) => void) | null = null;
   public onmessage: ((peerId: string, data: string) => void) | null = null;
+  /**
+   * The files channel to a participant opened
+   */
+  public onfilesopen: ((peerId: string) => void) | null = null;
+  public onfilesmessage: ((peerId: string, data: string | ArrayBuffer) => void) | null = null;
 
   private readonly rtcConfig: () => RTCConfiguration;
   private readonly sendMessage: MessageSender;
@@ -177,6 +188,14 @@ export class PeerMesh {
   }
 
   /**
+   * The open files channel to a participant, or null
+   */
+  filesChannel(peerId: string): RTCDataChannel | null {
+    const channel = this.peers.get(peerId)?.files;
+    return channel?.readyState === "open" ? channel : null;
+  }
+
+  /**
    * The participants whose chat channel is open
    */
   openPeers(): string[] {
@@ -230,7 +249,9 @@ export class PeerMesh {
     const link = new PeerLink(this.rtcConfig());
     const connection = link.connection;
     const channel = connection.createDataChannel("chat", { negotiated: true, id: CHAT_CHANNEL_ID });
-    const peer: MeshPeer = { connectionId, link, channel, open: false };
+    const files = connection.createDataChannel("files", { negotiated: true, id: FILES_CHANNEL_ID });
+    files.binaryType = "arraybuffer";
+    const peer: MeshPeer = { connectionId, link, channel, files, open: false };
     const current = () => this.peers.get(peerId) === peer;
 
     this.peers.set(peerId, peer);
@@ -252,6 +273,18 @@ export class PeerMesh {
     channel.onmessage = (event: MessageEvent) => {
       if (current() && typeof event.data === "string") {
         this.onmessage?.(peerId, event.data);
+      }
+    };
+
+    files.onopen = () => {
+      if (current()) {
+        this.onfilesopen?.(peerId);
+      }
+    };
+
+    files.onmessage = (event: MessageEvent) => {
+      if (current() && (typeof event.data === "string" || event.data instanceof ArrayBuffer)) {
+        this.onfilesmessage?.(peerId, event.data);
       }
     };
 

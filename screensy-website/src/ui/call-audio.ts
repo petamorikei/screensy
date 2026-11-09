@@ -1,3 +1,4 @@
+import { applySpeaker } from "../devices.ts";
 import { getElement } from "../dom.ts";
 
 export interface CallAudioView {
@@ -21,6 +22,7 @@ export class CallAudio {
   private readonly elements = new Map<string, HTMLAudioElement>();
   private muted = false;
   private blocked = false;
+  private speakerId = "";
 
   constructor() {
     this.container = getElement("call-audio", HTMLElement);
@@ -59,6 +61,7 @@ export class CallAudio {
         audio = document.createElement("audio");
         audio.dataset.streamId = view.key;
         audio.muted = this.muted;
+        void applySpeaker(audio, this.speakerId);
         this.container.append(audio);
         this.elements.set(view.key, audio);
       }
@@ -68,6 +71,17 @@ export class CallAudio {
       }
 
       this.play(audio);
+    }
+  }
+
+  /**
+   * Plays the call on the chosen speaker
+   */
+  setSpeaker(deviceId: string): void {
+    this.speakerId = deviceId;
+
+    for (const audio of this.elements.values()) {
+      void applySpeaker(audio, deviceId);
     }
   }
 

@@ -193,20 +193,25 @@ const INIT_SCRIPT = `
     },
   });
 
-  // getUserMedia gets Chrome's fake microphone (--use-fake-device-for-media-stream), a beep: an oscillator in an
-  // AudioContext stops when the machine has no audio output. __denyMicrophone refuses it; __userMediaCalls counts the
-  // calls, __userMediaConstraints keeps the last constraints and __microphones the streams.
+  // getUserMedia gets Chrome's fake microphone and camera (--use-fake-device-for-media-stream): a beep, and a moving
+  // picture. An oscillator in an AudioContext stops when the machine has no audio output. __denyMicrophone and
+  // __denyCamera refuse them; __userMediaCalls counts the calls, __userMediaConstraints keeps the last constraints,
+  // __microphones and __cameras the streams.
   window.__userMediaCalls = 0;
   window.__userMediaConstraints = null;
   window.__denyMicrophone = false;
+  window.__denyCamera = false;
   window.__microphones = [];
+  window.__cameras = [];
   const nativeGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   navigator.mediaDevices.getUserMedia = async (constraints) => {
     window.__userMediaCalls++;
     window.__userMediaConstraints = constraints;
-    if (window.__denyMicrophone) throw new DOMException("denied", "NotAllowedError");
+    if ((constraints.audio && window.__denyMicrophone) || (constraints.video && window.__denyCamera)) {
+      throw new DOMException("denied", "NotAllowedError");
+    }
     const stream = await nativeGetUserMedia(constraints);
-    window.__microphones.push(stream);
+    (constraints.video ? window.__cameras : window.__microphones).push(stream);
     return stream;
   };
 
@@ -1614,11 +1619,12 @@ const main = async () => {
   let viewer;
   let multiRoom;
 
-  await step("the server restarts with up to four presenters", async () => {
+  await step("the server restarts with up to four presenters and two cameras", async () => {
     for (const page of [a, b]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
-    await restartRendezvous("4");
+    // Two cameras, so that the call can check the limit
+    await restartRendezvous("4", { SCREENSY_MAX_CAMERAS: "2" });
   });
 
   await step("two presenters are shown side by side, to viewers and to each other", async () => {
@@ -1834,7 +1840,7 @@ const main = async () => {
       input: document.getElementById("chat-input").value,
       log: [...document.querySelectorAll("#chat-log .chat-message")].map((li) => ({
         name: li.querySelector(".chat-name").textContent,
-        text: li.querySelector(".chat-text").textContent,
+        text: li.querySelector(".chat-text")?.textContent ?? "",
         self: li.hasAttribute("data-self"),
       })),
     };
@@ -1964,6 +1970,107 @@ const main = async () => {
     );
     assert.deepEqual(chat.log, []);
     await cdp.send("Target.closeTarget", { targetId: c1.targetId });
+  });
+
+  // --- Files: shared in the chat, fetched from the sender on the files channel of the mesh ---
+
+  const FILES = `(() => [...document.querySelectorAll("#chat-log .chat-file")].map((row) => ({
+    name: row.querySelector(".chat-file-name").textContent,
+    status: row.dataset.status,
+    url: row.querySelector("a")?.href ?? null,
+    download: row.querySelector("a")?.download ?? null,
+  })))()`;
+  const waitFiles = async (page, desc, pred, timeout = 20000) => {
+    const end = Date.now() + timeout;
+    let last;
+    while (Date.now() < end) {
+      last = await page.eval(FILES);
+      if (pred(last)) return last;
+      await sleep(100);
+    }
+    throw new Error(`${page.label}: timeout waiting for ${desc}\nlast files: ${JSON.stringify(last, null, 1)}`);
+  };
+  // The content of a test file of the given size, and a checksum of it, the same in the page and here
+  const fileByte = (i) => (i * 7 + (i >> 11)) & 255;
+  const checksum = (size) => {
+    let sum = 0;
+    for (let i = 0; i < size; i++) sum = (sum * 31 + fileByte(i)) >>> 0;
+    return sum;
+  };
+  const attach = (page, name, size, type) =>
+    page.eval(
+      `(() => {
+        const bytes = new Uint8Array(${size});
+        for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7 + (i >> 11)) & 255;
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([bytes], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));
+        const input = document.getElementById("chat-file");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change"));
+      })()`,
+    );
+  const fetchedFile = (page, url) =>
+    page.eval(
+      `(async () => {
+        const response = await fetch(${JSON.stringify(url)});
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        let sum = 0;
+        for (let i = 0; i < bytes.length; i++) sum = (sum * 31 + bytes[i]) >>> 0;
+        return { size: bytes.length, sum, type: response.headers.get("content-type") };
+      })()`,
+    );
+  const clickFile = (page, status) =>
+    page.eval(`document.querySelector('#chat-log .chat-file[data-status="${status}"] button').click()`, true);
+  const BIG = 20_000_000;
+  const filesRoom = `${ORIGIN}/#FilesRoom${Date.now()}`;
+  let f1;
+  let f2;
+  let f3;
+
+  await step("files: a shared file shows in the others' chat, and downloads whole from the sender", async () => {
+    f1 = await newPage(cdp, "F1", { initExtra: withName("Fay") });
+    f2 = await newPage(cdp, "F2", { initExtra: withName("Gus") });
+    await f1.goto(filesRoom);
+    await f2.goto(filesRoom);
+    await waitChat(f1, "F1 reaches F2", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    await waitChat(f2, "F2 reaches F1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    // Larger than the 16 MB that the receiver folds into a Blob at once
+    await attach(f1, "data.bin", BIG, "application/octet-stream");
+    const own = await waitFiles(f1, "F1 shows its file", (files) => files.length === 1);
+    assert.deepEqual(own, [{ name: "📎 data.bin (20.0 MB)", status: "own", url: null, download: null }]);
+    await waitFiles(f2, "F2 can download it", (files) => files[0]?.status === "idle");
+
+    await clickFile(f2, "idle");
+    // The chat goes on during the transfer, on its own channel
+    await pressEnter(f1, "during the transfer");
+    await waitChat(f2, "F2 gets the chat message", (c) => texts(c).includes("Fay: during the transfer"), 5000);
+    const done = await waitFiles(f2, "F2 downloaded it", (files) => files[0]?.status === "done", 60000);
+    assert.equal(done[0].download, "data.bin");
+    assert.deepEqual(await fetchedFile(f2, done[0].url), {
+      size: BIG,
+      sum: checksum(BIG),
+      type: "application/octet-stream",
+    });
+  });
+
+  await step("files: a late joiner sees the file and gets it from the sender", async () => {
+    f3 = await newPage(cdp, "F3", { initExtra: withName("Hal") });
+    await f3.goto(filesRoom);
+    await waitFiles(f3, "F3 can download it", (files) => files[0]?.status === "idle");
+    await clickFile(f3, "idle");
+    const done = await waitFiles(f3, "F3 downloaded it", (files) => files[0]?.status === "done", 60000);
+    assert.equal((await fetchedFile(f3, done[0].url)).sum, checksum(BIG));
+  });
+
+  await step("files: once the sender leaves, the file can no longer be fetched", async () => {
+    await attach(f1, "notes.txt", 1000, "text/plain");
+    await waitFiles(f2, "F2 sees the second file", (files) => files[1]?.status === "idle");
+    await cdp.send("Target.closeTarget", { targetId: f1.targetId });
+    const gone = await waitFiles(f2, "F2 cannot fetch it", (files) => files[1]?.status === "unreachable");
+    assert.equal(gone[0].status, "done", "the downloaded file stays");
+    for (const page of [f2, f3]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
   });
 
   // --- Voice call: one stream per participant in the call, to everyone in the room ---
@@ -2150,6 +2257,167 @@ const main = async () => {
     s = await waitCall(k1, "K1 off again", (c) => c.screenAudio === false && c.audio.length === 1);
     assert.equal(s.echoChoice, false, "the choice was made for this screen");
     for (const page of [k1, k2]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+  });
+
+  // --- Video: the cameras of the call, on the stage beside the screens ---
+
+  const VIDEO = `(() => {
+    const camera = window.__cameras.at(-1)?.getVideoTracks()[0];
+    const button = document.getElementById("call-camera-button");
+    return {
+      cameraButton: button.classList.contains("hidden") ? null : { pressed: button.getAttribute("aria-pressed") === "true", disabled: button.disabled },
+      camera: camera == null ? null : camera.readyState,
+      tiles: [...document.querySelectorAll('#stage .tile[data-kind="camera"]')].map((tile) => {
+        const video = tile.querySelector("video");
+        return {
+          name: tile.querySelector(".tile-name").textContent,
+          self: tile.hasAttribute("data-self"),
+          playing: video.videoWidth > 0 && !video.paused,
+          muted: video.muted,
+          mirrored: getComputedStyle(video).transform !== "none",
+        };
+      }),
+      bar: [...document.querySelectorAll("#call-members li")].map((li) => li.textContent),
+      speaking: [...document.querySelectorAll("#call-members li[data-speaking]")].map((li) => li.firstChild.textContent),
+      notices: [...document.querySelectorAll(".notice:not(.hidden)")].map((notice) => notice.id),
+    };
+  })()`;
+  const waitVideo = async (page, desc, pred, timeout = 15000) => {
+    const end = Date.now() + timeout;
+    let last;
+    while (Date.now() < end) {
+      last = await page.eval(VIDEO);
+      if (pred(last)) return last;
+      await sleep(100);
+    }
+    throw new Error(`${page.label}: timeout waiting for ${desc}\nlast video: ${JSON.stringify(last, null, 1)}`);
+  };
+  const joinCall = async (page) => {
+    await page.click("#call-join-button");
+    await waitCall(page, `${page.label} in the call`, (c) => c.leave);
+  };
+  const videoRoom = `${ORIGIN}/#VideoRoom${Date.now()}`;
+  let v1;
+  let v2;
+  let v3;
+
+  await step(
+    "video: a camera shows as a tile to everyone, also outside the call; the own one is mirrored",
+    async () => {
+      v1 = await newPage(cdp, "V1", { initExtra: withName("Vic") });
+      v2 = await newPage(cdp, "V2", { initExtra: withName("Wes") });
+      v3 = await newPage(cdp, "V3", { initExtra: withName("Xia") });
+      for (const page of [v1, v2, v3]) {
+        await page.goto(videoRoom);
+        await waitCall(page, `${page.label} can join`, (c) => c.join);
+      }
+      assert.equal((await v1.eval(VIDEO)).cameraButton, null, "no camera button outside the call");
+      await joinCall(v1);
+      assert.deepEqual((await v1.eval(VIDEO)).cameraButton, { pressed: false, disabled: false }, "the camera is off");
+      await v1.click("#call-camera-button");
+      const own = await waitVideo(v1, "V1 shows its camera", (v) => v.tiles.length === 1 && v.tiles[0].playing);
+      assert.deepEqual(own.tiles[0], { name: "You", self: true, playing: true, muted: true, mirrored: true });
+      assert.deepEqual(own.cameraButton, { pressed: true, disabled: false });
+      assert.deepEqual(await v1.eval("window.__userMediaConstraints.video"), {
+        width: { ideal: 640 },
+        height: { ideal: 360 },
+        frameRate: { ideal: 24 },
+      });
+      for (const page of [v2, v3]) {
+        const seen = await waitVideo(page, `${page.label} sees Vic's camera`, (v) => v.tiles[0]?.playing === true);
+        assert.deepEqual(seen.tiles, [{ name: "Vic", self: false, playing: true, muted: true, mirrored: false }]);
+        assert.deepEqual(seen.bar, ["Vic📷"]);
+      }
+      await v2.shot("camera");
+    },
+  );
+
+  await step("video: turning the camera off removes the tile and stops the camera", async () => {
+    await v1.click("#call-camera-button");
+    const off = await waitVideo(v1, "V1 camera off", (v) => v.tiles.length === 0 && v.camera === "ended");
+    assert.deepEqual(off.cameraButton, { pressed: false, disabled: false });
+    await waitVideo(v2, "V2 no longer sees Vic's camera", (v) => v.tiles.length === 0 && v.bar[0] === "Vic");
+    await v1.click("#call-camera-button");
+    await waitVideo(v2, "V2 sees Vic's camera again", (v) => v.tiles[0]?.playing === true);
+  });
+
+  await step("video: a camera beyond the limit of the room is refused and stopped", async () => {
+    await joinCall(v2);
+    await v2.click("#call-camera-button");
+    await waitVideo(v3, "V3 sees two cameras", (v) => v.tiles.length === 2 && v.tiles.every((tile) => tile.playing));
+    await joinCall(v3);
+    await v3.click("#call-camera-button");
+    const refused = await waitVideo(v3, "V3 refused", (v) => v.notices.includes("notice-cameras-full"));
+    await waitVideo(v3, "V3's camera stopped", (v) => v.camera === "ended" && v.cameraButton?.pressed === false);
+    assert.equal(refused.tiles.filter((tile) => tile.self).length, 0);
+    await sleep(500);
+    assert.equal((await v1.eval(VIDEO)).tiles.length, 2, "V1 still sees two cameras");
+  });
+
+  await step("call: who speaks is marked, but not while muted", async () => {
+    // Chrome's fake microphone beeps
+    await waitVideo(v1, "V1 sees Wes speak", (v) => v.speaking.includes("Wes"), 20000);
+    await v2.click("#call-mute-button");
+    await waitCall(v1, "V1 sees Wes muted", (c) =>
+      c.bar?.some((name) => name.startsWith("Wes") && name.includes("🔇")),
+    );
+    await sleep(1000);
+    for (let i = 0; i < 10; i++) {
+      assert.ok(!(await v1.eval(VIDEO)).speaking.includes("Wes"), "a muted participant does not speak");
+      await sleep(200);
+    }
+    await v2.click("#call-mute-button");
+  });
+
+  await step(
+    "call: the menu lists the devices; another microphone replaces the track on the same connections",
+    async () => {
+      await openMenu(v2);
+      const options = await waitEval(
+        v2,
+        "V2 lists the devices",
+        `[...document.querySelectorAll("#device-microphone option")].map((option) => [option.value, option.textContent])`,
+        (list) => list.length >= 2 && list.slice(1).every(([value, label]) => value !== "" && label !== ""),
+      );
+      assert.equal(options[0][0], "", "the default comes first");
+      assert.ok(await v2.eval(isShown("menu-devices")));
+      const cameras = await v2.eval(`document.querySelectorAll("#device-camera option").length`);
+      assert.ok(cameras >= 2, "the fake camera is listed");
+      const pcs = await v2.eval("window.__pcs.length");
+      const replaced = await v2.eval("window.__replaced.length");
+      const chosen = options.at(-1)[0];
+      await v2.eval(
+        `(() => { const select = document.getElementById("device-microphone"); select.value = ${JSON.stringify(chosen)}; select.dispatchEvent(new Event("change")); })()`,
+      );
+      await waitEval(v2, "V2 uses another microphone", "window.__microphones.length", (n) => n === 2);
+      await waitEval(
+        v2,
+        "the new microphone replaces the track",
+        `window.__replaced.slice(${replaced}).filter((entry) => entry.kind === "audio").length`,
+        (n) => n > 0,
+      );
+      assert.equal(await v2.eval("window.__pcs.length"), pcs, "no new connection");
+      assert.equal(await v2.eval("window.__microphones[0].getAudioTracks()[0].readyState"), "ended");
+      assert.deepEqual(await v2.eval("window.__userMediaConstraints.audio.deviceId"), { ideal: chosen });
+      assert.equal(JSON.parse(await v2.eval(`localStorage.getItem("screensy.devices")`)).microphone, chosen);
+      await waitCall(v1, "V1 still plays Wes", (c) => c.audio.length === 2 && c.audio.every((audio) => audio.playing));
+      await closeMenu(v2);
+    },
+  );
+
+  await step("call: the statistics list the connections of the call", async () => {
+    await openMenu(v2);
+    const stats = await waitEval(
+      v2,
+      "V2's call statistics",
+      `[...document.querySelectorAll("#stats-list .stats-entry")].map((e) => e.querySelector(".stats-name").textContent + " " + e.querySelector(".stats-direction").textContent)`,
+      (list) => list.includes("Vic (call) receiving") && list.includes("Vic (call) sending"),
+    );
+    assert.ok(stats.includes("Xia (call) receiving"), JSON.stringify(stats));
+    await closeMenu(v2);
+    for (const page of [v1, v2, v3]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
   });

@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatRanges, ChatWire } from "./chat-protocol.ts";
+import type { ChatFile, ChatMessage, ChatRanges, ChatWire } from "./chat-protocol.ts";
 import { ChatStorageSchema, ChatWireSchema, MAX_CHAT_MESSAGES } from "./chat-protocol.ts";
 import { CHAT_STORAGE_PREFIX, getSessionStorage, readStorage, writeStorage } from "./storage.ts";
 
@@ -230,7 +230,7 @@ export class Chat {
   /**
    * Sends a message to every peer. Those without an open channel get it from the next summary.
    */
-  send(text: string, participantId: string, name: string): boolean {
+  send(text: string, participantId: string, name: string, file?: ChatFile): boolean {
     if (this.roomInstanceId == null) {
       return false;
     }
@@ -243,6 +243,7 @@ export class Chat {
       name,
       text,
       sentAt: Date.now(),
+      ...(file == null ? {} : { file }),
     };
 
     this.add(message);
