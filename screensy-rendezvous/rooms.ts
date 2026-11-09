@@ -4,6 +4,7 @@
  * or read process.env.
  */
 import type {
+  CallState,
   ClientMessage,
   DisconnectReason,
   IceServer,
@@ -306,6 +307,12 @@ class Room {
   private readonly participants = new Map<string, Participant>();
   private presenters: Presenter[] = [];
 
+  /**
+   * The participants in the voice call. Being in the call belongs to a connection, because the page that holds the
+   * microphone is gone when it closes: a page that comes back joins again.
+   */
+  private calls: CallState[] = [];
+
   private nextParticipantId = 0;
   private nextConnectionId = 0;
   private nextStreamId = 0;
@@ -412,6 +419,23 @@ class Room {
 
         break;
       }
+      case "joincall":
+        this.joinCall(participant, message.muted);
+        break;
+      case "leavecall":
+        this.leaveCall(participant.id);
+        this.broadcastState();
+        break;
+      case "callstate": {
+        const call = this.calls.find((call) => call.participantId === participant.id);
+
+        if (call != null) {
+          call.muted = message.muted;
+          this.broadcastState();
+        }
+
+        break;
+      }
       case "signal":
         this.relaySignal(participant, message);
         break;
@@ -447,6 +471,7 @@ class Room {
 
     this.release(old);
     participant.connection = null;
+    this.leaveCall(participant.id);
 
     send(old, { type: "replaced" });
     old.socket.close();
@@ -515,6 +540,38 @@ class Room {
     clearGrace(participant);
     this.participants.delete(participant.id);
     this.presenters = this.presenters.filter((presenter) => presenter.participantId !== participant.id);
+    this.leaveCall(participant.id);
+  }
+
+  /**
+   * Adds the participant to the call with a new stream, also if they are in it already
+   */
+  private joinCall(participant: Participant, muted: boolean): void {
+    const streamId = (this.nextStreamId++).toString();
+    const call = this.calls.find((call) => call.participantId === participant.id);
+
+    if (call == null) {
+      this.calls.push({ participantId: participant.id, streamId, muted });
+    } else {
+      call.streamId = streamId;
+      call.muted = muted;
+    }
+
+    this.broadcastState();
+  }
+
+  private leaveCall(participantId: string): void {
+    this.calls = this.calls.filter((call) => call.participantId !== participantId);
+  }
+
+  /**
+   * The participant who sends a stream: its presenter, or the participant in the call. Stream IDs come from one
+   * counter, so one of them at most has it.
+   */
+  private streamOwner(streamId: string): string | null {
+    const presenter = this.presenters.find((presenter) => presenter.streamId === streamId);
+    const call = this.calls.find((call) => call.streamId === streamId);
+    return presenter?.participantId ?? call?.participantId ?? null;
   }
 
   /**
@@ -538,14 +595,14 @@ class Room {
       return;
     }
 
-    const presenter = this.presenters.find((presenter) => presenter.streamId === message.streamId);
+    const owner = this.streamOwner(message.streamId);
 
-    if (presenter == null) {
+    if (owner == null) {
       return;
     }
 
-    if (presenter.participantId !== sender.id && presenter.participantId !== message.to) {
-      // Viewers may not signal each other
+    if (owner !== sender.id && owner !== message.to) {
+      // Two participants who are both only receiving the stream may not signal each other
       return;
     }
 
@@ -570,6 +627,8 @@ class Room {
 
   private handleDisconnect(participant: Participant, reason: DisconnectReason): void {
     participant.connection = null;
+    // A presenter keeps the seat for the grace period, but not the call
+    this.leaveCall(participant.id);
 
     const presenter = this.presenterOf(participant.id);
 
@@ -624,6 +683,7 @@ class Room {
         ...presenter,
         graceRemainingMs: graceRemainingMs(presenter.participantId),
       })),
+      calls: this.calls.map((call) => ({ ...call })),
     };
 
     for (const participant of this.participants.values()) {

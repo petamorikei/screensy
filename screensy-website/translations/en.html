@@ -105,6 +105,15 @@
                 Chat
                 <span id="chat-unread" class="chat-unread hidden">0</span>
             </button>
+            <button id="call-join-button" class="hidden" type="button">
+                Join call
+            </button>
+            <button id="call-mute-button" class="hidden" type="button" aria-pressed="false">
+                Mute microphone
+            </button>
+            <button id="call-leave-button" class="hidden" type="button">
+                Leave call
+            </button>
             <span id="viewer-count" class="hidden">
                 Viewers: <span id="viewer-count-value">0</span>
             </span>
@@ -252,6 +261,35 @@
                     ×
                 </button>
             </div>
+            <div id="notice-microphone-denied" class="notice hidden" role="status">
+                <p>
+                    Could not access your microphone. If your browser did not
+                    ask for access, check its settings.
+                </p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-call-audio-blocked" class="notice hidden" role="status">
+                <p>Click anywhere on the page to hear the call.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="echo-choice" class="notice echo-choice hidden" role="alertdialog" aria-labelledby="echo-choice-text">
+                <p id="echo-choice-text">
+                    Your shared sound would send the call back to everyone, so
+                    it is off for now. Which one do you want?
+                </p>
+                <div class="echo-choice-buttons">
+                    <button id="echo-choice-call" type="button">
+                        Hear the call, share no sound
+                    </button>
+                    <button id="echo-choice-screen" type="button">
+                        Share the sound, mute the call here
+                    </button>
+                </div>
+            </div>
         </div>
         <dialog id="present-dialog">
             <form id="present-form">
@@ -298,6 +336,10 @@
         <span id="text-unmute" class="hidden">Unmute</span>
         <span id="text-chat-reach" class="hidden">Reaches {open} of {total} people</span>
         <span id="text-chat-alone" class="hidden">Nobody else is here yet</span>
+        <span id="text-in-call" class="hidden">in call</span>
+        <span id="text-call-muted" class="hidden">muted</span>
+        <span id="text-mute-microphone" class="hidden">Mute microphone</span>
+        <span id="text-unmute-microphone" class="hidden">Unmute microphone</span>
         <template id="tile-template">
             <div class="tile">
                 <video autoplay muted playsinline></video>
@@ -401,5 +443,10 @@
                 <button id="chat-send" type="submit">Send</button>
             </form>
         </aside>
+        <div id="call-bar" class="call-bar hidden">
+            <span class="call-bar-label">In the call:</span>
+            <ul id="call-members" class="call-members"></ul>
+        </div>
+        <div id="call-audio" class="hidden"></div>
     </body>
 </html>

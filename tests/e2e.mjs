@@ -193,6 +193,23 @@ const INIT_SCRIPT = `
     },
   });
 
+  // getUserMedia gets Chrome's fake microphone (--use-fake-device-for-media-stream), a beep: an oscillator in an
+  // AudioContext stops when the machine has no audio output. __denyMicrophone refuses it; __userMediaCalls counts the
+  // calls, __userMediaConstraints keeps the last constraints and __microphones the streams.
+  window.__userMediaCalls = 0;
+  window.__userMediaConstraints = null;
+  window.__denyMicrophone = false;
+  window.__microphones = [];
+  const nativeGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = async (constraints) => {
+    window.__userMediaCalls++;
+    window.__userMediaConstraints = constraints;
+    if (window.__denyMicrophone) throw new DOMException("denied", "NotAllowedError");
+    const stream = await nativeGetUserMedia(constraints);
+    window.__microphones.push(stream);
+    return stream;
+  };
+
   // Headless Chrome cannot accept the screen picker. __nextCapture sets the size, a fixed color and audio of the next
   // capture, its frame rate and the surface it reports; by default it is 640x360 at 20 fps, with changing colors and
 // no audio.
@@ -484,6 +501,8 @@ const main = async () => {
     `--user-data-dir=${mkdtempSync(join(tmpdir(), "screensy-e2e-"))}`,
     "--no-first-run",
     "--autoplay-policy=no-user-gesture-required",
+    "--use-fake-device-for-media-stream",
+    "--use-fake-ui-for-media-stream",
   ]);
   await waitHttp(`${ORIGIN}/`);
   const version = await (await waitHttp(`http://localhost:${CDP_PORT}/json/version`)).json();
@@ -540,7 +559,7 @@ const main = async () => {
     const s = await b.waitFor("video", (s) => s.videoPlaying);
     assert.equal(s.lang, "ja");
     assert.equal(s.status, null);
-    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button"]);
+    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button", "call-join-button"]);
     await a.waitFor("viewer count 1", (s) => s.viewers === "1");
     await b.shot("3-viewing-ja");
     await a.shot("3b-presenting-1-viewer-en");
@@ -560,7 +579,7 @@ const main = async () => {
     assert.match(sa.noticeText[0], /Bob/);
     assert.equal(sa.captureLive, false);
     await a.shot("5-taken-over-notice-en");
-    assert.deepEqual(sa.toolbar, ["present-button", "menu-button", "chat-button"]);
+    assert.deepEqual(sa.toolbar, ["present-button", "menu-button", "chat-button", "call-join-button"]);
   });
 
   await step("browser 'Stop sharing' (track ended) stops presenting", async () => {
@@ -673,7 +692,7 @@ const main = async () => {
     await a.waitFor("A waiting", (s) => s.status === "status-waiting");
     const s = await b.state();
     assert.equal(s.status, "status-waiting");
-    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button"]);
+    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button", "call-join-button"]);
   });
 
   await step("duplicated presenter tab: the seat moves to the duplicate, the original stops", async () => {
@@ -1131,7 +1150,7 @@ const main = async () => {
     });
     await e.goto(`${ORIGIN}/${room}`);
     const se = await e.waitFor("E joined", (s) => s.status === "status-waiting");
-    assert.deepEqual(se.toolbar, ["menu-button", "chat-button"]);
+    assert.deepEqual(se.toolbar, ["menu-button", "chat-button", "call-join-button"]);
     assert.equal(await e.eval(isShown("menu-quality")), false);
   });
 
@@ -1947,6 +1966,194 @@ const main = async () => {
     await cdp.send("Target.closeTarget", { targetId: c1.targetId });
   });
 
+  // --- Voice call: one stream per participant in the call, to everyone in the room ---
+
+  const CALL = `(() => {
+    const shown = (id) => !document.getElementById(id).classList.contains("hidden");
+    const microphone = window.__microphones.at(-1)?.getAudioTracks()[0];
+    const screenAudio = window.__captures.at(-1)?.getAudioTracks()[0];
+    return {
+      join: shown("call-join-button"),
+      muted: shown("call-mute-button") ? document.getElementById("call-mute-button").getAttribute("aria-pressed") === "true" : null,
+      leave: shown("call-leave-button"),
+      bar: shown("call-bar") ? [...document.querySelectorAll("#call-members li")].map((li) => li.textContent) : null,
+      audio: [...document.querySelectorAll("#call-audio audio")].map((audio) => ({
+        playing: !audio.paused && audio.srcObject != null && audio.srcObject.getAudioTracks().length > 0,
+        muted: audio.muted,
+      })),
+      microphone: microphone == null ? null : microphone.readyState === "live" ? (microphone.enabled ? "on" : "off") : "ended",
+      microphoneCalls: window.__userMediaCalls,
+      screenAudio: screenAudio == null ? null : screenAudio.enabled,
+      echoChoice: shown("echo-choice"),
+      calls: window.__roomState?.calls ?? [],
+      notices: [...document.querySelectorAll(".notice:not(.hidden)")].map((notice) => notice.id),
+    };
+  })()`;
+  const waitCall = async (page, desc, pred, timeout = 10000) => {
+    const end = Date.now() + timeout;
+    let last;
+    while (Date.now() < end) {
+      last = await page.eval(CALL);
+      if (pred(last)) return last;
+      await sleep(100);
+    }
+    throw new Error(`${page.label}: timeout waiting for ${desc}\nlast call: ${JSON.stringify(last, null, 1)}`);
+  };
+  // The audio bytes that the page received on its open connections
+  const AUDIO_BYTES = `(async () => {
+    let total = 0;
+    for (const pc of window.__pcs.filter((pc) => pc.connectionState !== "closed")) {
+      (await pc.getStats()).forEach((report) => {
+        if (report.type === "inbound-rtp" && report.kind === "audio") total += report.bytesReceived;
+      });
+    }
+    return total;
+  })()`;
+  const waitAudioFlowing = async (page, desc) => {
+    const end = Date.now() + 15000;
+    let before = await page.eval(AUDIO_BYTES);
+    while (Date.now() < end) {
+      await sleep(500);
+      const now = await page.eval(AUDIO_BYTES);
+      if (now > before && before > 0) return;
+      before = now;
+    }
+    throw new Error(`${page.label}: timeout waiting for ${desc}`);
+  };
+  const callRoom = `${ORIGIN}/#CallRoom${Date.now()}`;
+  let k1;
+  let k2;
+
+  await step("call: joining sends the microphone to everyone in the room, also to those outside the call", async () => {
+    k1 = await newPage(cdp, "K1", { initExtra: withName("Kim") });
+    k2 = await newPage(cdp, "K2", { initExtra: withName("Lee") });
+    await k1.goto(callRoom);
+    await k2.goto(callRoom);
+    await waitCall(k1, "K1 can join", (c) => c.join && c.bar == null);
+    await waitCall(k2, "K2 can join", (c) => c.join);
+    assert.equal(await k1.eval("window.__userMediaCalls"), 0, "no microphone before joining");
+
+    await k1.click("#call-join-button");
+    const joined = await waitCall(k1, "K1 in the call", (c) => c.leave && c.bar?.length === 1);
+    assert.deepEqual(joined.bar, ["Kim"]);
+    assert.equal(joined.muted, false, "not muted when joining");
+    assert.equal(joined.microphone, "on");
+    assert.equal(joined.join, false);
+    assert.deepEqual(await k1.eval("window.__userMediaConstraints.audio"), {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+    assert.deepEqual(joined.audio, [], "the own microphone does not play");
+
+    const heard = await waitCall(k2, "K2 plays Kim's microphone", (c) => c.audio.length === 1 && c.audio[0].playing);
+    assert.deepEqual(heard.bar, ["Kim"]);
+    assert.equal(heard.join, true, "K2 is not in the call");
+    await waitAudioFlowing(k2, "audio from K1");
+    const badges = await k2.eval(`[...document.querySelectorAll("#participant-list li")].map((li) => li.textContent)`);
+    assert.ok(
+      badges.some((text) => text.startsWith("Kim") && text.includes("in call")),
+      JSON.stringify(badges),
+    );
+  });
+
+  await step("call: a second participant hears the first, and the first hears them", async () => {
+    await k2.click("#call-join-button");
+    await waitCall(k1, "K1 plays Lee's microphone", (c) => c.audio.length === 1 && c.audio[0].playing);
+    await waitAudioFlowing(k1, "audio from K2");
+    const both = await waitCall(k2, "K2 in the call", (c) => c.leave && c.bar?.length === 2);
+    assert.deepEqual(both.bar, ["Kim", "Lee"]);
+    assert.equal(both.audio.length, 1);
+  });
+
+  await step("call: muting sends silence and shows a mark to the others", async () => {
+    await k1.click("#call-mute-button");
+    const muted = await waitCall(k1, "K1 muted", (c) => c.muted === true);
+    assert.equal(muted.microphone, "off");
+    await waitCall(k2, "K2 sees Kim muted", (c) => c.bar?.[0] === "Kim🔇");
+    await k1.click("#call-mute-button");
+    assert.equal((await waitCall(k1, "K1 unmuted", (c) => c.muted === false)).microphone, "on");
+    await waitCall(k2, "K2 sees Kim unmuted", (c) => c.bar?.[0] === "Kim");
+  });
+
+  await step("call: after a WebSocket drop, the page joins again with the same microphone", async () => {
+    // Kim joined first. A clean close removes a participant who does not present, so Kim comes back with a new ID.
+    const before = (await k2.eval("window.__roomState.calls"))[0].streamId;
+    await k1.eval("window.__sockets.at(-1).close()");
+    await waitCall(
+      k2,
+      "K2 sees Kim's new stream",
+      (c) => c.calls.length === 2 && !c.calls.some((call) => call.streamId === before) && c.bar?.includes("Kim"),
+      15000,
+    );
+    const back = await waitCall(k1, "K1 in the call again", (c) => c.leave && c.bar?.length === 2);
+    assert.equal(back.microphoneCalls, 1, "the microphone was not asked for again");
+    assert.equal(back.microphone, "on");
+    await waitCall(k2, "K2 plays Kim again", (c) => c.audio.length === 1 && c.audio[0].playing);
+    await waitAudioFlowing(k2, "audio from K1 after the reconnect");
+  });
+
+  await step("call: leaving stops the microphone and its sound; a reload leaves the call", async () => {
+    await k1.click("#call-leave-button");
+    const left = await waitCall(k1, "K1 left", (c) => c.join && c.bar?.length === 1);
+    assert.equal(left.microphone, "ended");
+    assert.deepEqual(left.bar, ["Lee"]);
+    const k2State = await waitCall(k2, "K2 no longer plays Kim", (c) => c.audio.length === 0);
+    assert.deepEqual(k2State.bar, ["Lee"]);
+    await k2.reload();
+    await waitCall(k2, "K2 out of the call after the reload", (c) => c.join && c.bar == null);
+    await waitCall(k1, "K1 sees nobody in the call", (c) => c.bar == null && c.audio.length === 0);
+  });
+
+  await step("call: a refused microphone shows a notice and does not join", async () => {
+    await k1.eval("window.__denyMicrophone = true");
+    await k1.click("#call-join-button");
+    const refused = await waitCall(k1, "K1 notice", (c) => c.notices.includes("notice-microphone-denied"));
+    assert.equal(refused.join, true);
+    assert.equal(refused.leave, false);
+    await sleep(300);
+    assert.deepEqual((await k1.eval(CALL)).calls, []);
+    await k1.eval("window.__denyMicrophone = false");
+    await k1.click("#notice-microphone-denied .notice-close");
+  });
+
+  await step("call: shared sound that would carry the call back stays off until the presenter chooses", async () => {
+    await k2.click("#call-join-button");
+    await waitCall(k1, "K1 plays Lee", (c) => c.audio.length === 1 && c.audio[0].playing);
+    // A screen with system sound, without restrictOwnAudio: it would carry the call that K1 plays
+    await presentAs(k1, "Kim", { audio: true, surface: "monitor" });
+    let s = await waitCall(k1, "K1 asked", (c) => c.echoChoice);
+    assert.equal(s.screenAudio, false, "the shared sound is off before the choice");
+    assert.equal(s.audio[0].muted, false, "the call plays meanwhile");
+    await k1.shot("echo-choice");
+
+    await k1.click("#echo-choice-screen");
+    s = await waitCall(k1, "K1 shares the sound", (c) => !c.echoChoice && c.screenAudio === true);
+    assert.equal(s.audio[0].muted, true, "the call is muted on this page");
+
+    // A tab only has its own sound: no question, and the call plays again
+    await switchTo(k1, { audio: true, surface: "browser" });
+    s = await waitCall(k1, "K1 shares a tab", (c) => c.screenAudio === true && !c.echoChoice && !c.audio[0].muted);
+
+    // A new screen asks again
+    await switchTo(k1, { audio: true, surface: "monitor" });
+    s = await waitCall(k1, "K1 asked again", (c) => c.echoChoice && c.screenAudio === false);
+    await k1.click("#echo-choice-call");
+    s = await waitCall(k1, "K1 keeps the call", (c) => !c.echoChoice);
+    assert.equal(s.screenAudio, false);
+    assert.equal(s.audio[0].muted, false);
+
+    // Without anyone else in the call, the sound goes out; when the call starts again, the choice stays
+    await k2.click("#call-leave-button");
+    await waitCall(k1, "K1 shares the sound with no call", (c) => c.screenAudio === true && c.audio.length === 0);
+    await k2.click("#call-join-button");
+    s = await waitCall(k1, "K1 off again", (c) => c.screenAudio === false && c.audio.length === 1);
+    assert.equal(s.echoChoice, false, "the choice was made for this screen");
+    for (const page of [k1, k2]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+  });
+
   // --- Cloudflare: the Worker, Static Assets and the Durable Object in wrangler dev ---
 
   if (process.env.SKIP_CLOUDFLARE) {
@@ -2001,6 +2208,9 @@ const main = async () => {
       await waitChat(viewer, "W2 reaches W1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people", 20000);
       await pressEnter(viewer, "through the Worker");
       await waitChat(presenter, "W1 gets the chat message", (c) => texts(c).includes("Guest 2: through the Worker"));
+      // And the call
+      await viewer.click("#call-join-button");
+      await waitCall(presenter, "W1 plays W2's microphone", (c) => c.audio.length === 1 && c.audio[0].playing, 20000);
       for (const page of [presenter, viewer]) {
         await cdp.send("Target.closeTarget", { targetId: page.targetId });
       }

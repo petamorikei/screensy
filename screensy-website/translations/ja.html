@@ -101,6 +101,15 @@
                 チャット
                 <span id="chat-unread" class="chat-unread hidden">0</span>
             </button>
+            <button id="call-join-button" class="hidden" type="button">
+                通話に参加
+            </button>
+            <button id="call-mute-button" class="hidden" type="button" aria-pressed="false">
+                マイクをミュート
+            </button>
+            <button id="call-leave-button" class="hidden" type="button">
+                通話から抜ける
+            </button>
             <span id="viewer-count" class="hidden">
                 視聴者: <span id="viewer-count-value">0</span>
             </span>
@@ -241,6 +250,33 @@
                     ×
                 </button>
             </div>
+            <div id="notice-microphone-denied" class="notice hidden" role="status">
+                <p>
+                    マイクにアクセスできませんでした。ブラウザがアクセスを求めてこない場合は、ブラウザの設定を見直して下さい。
+                </p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-call-audio-blocked" class="notice hidden" role="status">
+                <p>ページのどこかをクリックすると、通話が聞こえます。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="echo-choice" class="notice echo-choice hidden" role="alertdialog" aria-labelledby="echo-choice-text">
+                <p id="echo-choice-text">
+                    共有している音声に通話の声が入り、全員に送り返されてしまうため、いまは共有音声を止めています。どちらにしますか？
+                </p>
+                <div class="echo-choice-buttons">
+                    <button id="echo-choice-call" type="button">
+                        通話を聞く（共有音声は送らない）
+                    </button>
+                    <button id="echo-choice-screen" type="button">
+                        共有音声を送る（このページでは通話を消音）
+                    </button>
+                </div>
+            </div>
         </div>
         <dialog id="present-dialog">
             <form id="present-form">
@@ -285,6 +321,10 @@
         <span id="text-unmute" class="hidden">消音を解除</span>
         <span id="text-chat-reach" class="hidden">{total}人中{open}人に届きます</span>
         <span id="text-chat-alone" class="hidden">まだ誰もいません</span>
+        <span id="text-in-call" class="hidden">通話中</span>
+        <span id="text-call-muted" class="hidden">ミュート中</span>
+        <span id="text-mute-microphone" class="hidden">マイクをミュート</span>
+        <span id="text-unmute-microphone" class="hidden">ミュートを解除</span>
         <template id="tile-template">
             <div class="tile">
                 <video autoplay muted playsinline></video>
@@ -386,5 +426,10 @@
                 <button id="chat-send" type="submit">送信</button>
             </form>
         </aside>
+        <div id="call-bar" class="call-bar hidden">
+            <span class="call-bar-label">通話中:</span>
+            <ul id="call-members" class="call-members"></ul>
+        </div>
+        <div id="call-audio" class="hidden"></div>
     </body>
 </html>

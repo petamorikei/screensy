@@ -38,6 +38,7 @@ export class Menu {
   private readonly youText: string;
   private readonly presentingText: string;
   private readonly reconnectingText: string;
+  private readonly inCallText: string;
 
   /**
    * The settings shown in the menu. An invalid input goes back to them.
@@ -67,6 +68,7 @@ export class Menu {
     this.youText = getElement("text-you", HTMLElement).textContent.trim();
     this.presentingText = getElement("text-presenting", HTMLElement).textContent.trim();
     this.reconnectingText = getElement("text-reconnecting", HTMLElement).textContent.trim();
+    this.inCallText = getElement("text-in-call", HTMLElement).textContent.trim();
 
     const menu = getElement("menu", HTMLElement);
     menu.addEventListener("toggle", () => this.onmenutoggle?.(menu.matches(":popover-open")));
@@ -115,7 +117,14 @@ export class Menu {
    * Lists the participants in the menu. Names come from other people, so they are only ever set as text.
    */
   showParticipants(
-    participants: { id: string; name: string; you: boolean; presenting: boolean; reconnecting: boolean }[],
+    participants: {
+      id: string;
+      name: string;
+      you: boolean;
+      presenting: boolean;
+      reconnecting: boolean;
+      inCall: boolean;
+    }[],
   ): void {
     const items = participants.map((participant) => {
       const item = document.createElement("li");
@@ -128,6 +137,10 @@ export class Menu {
 
       if (participant.presenting) {
         badges.push(participant.reconnecting ? this.reconnectingText : this.presentingText);
+      }
+
+      if (participant.inCall) {
+        badges.push(this.inCallText);
       }
 
       if (participant.you) {

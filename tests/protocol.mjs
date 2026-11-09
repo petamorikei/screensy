@@ -608,6 +608,87 @@ test("mesh signals go between any two connected participants", async () => {
   await c.close();
 });
 
+test("joincall, callstate and leavecall; a closed socket leaves the call, also for a presenter", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  const b = new Client("b");
+  await a.join(room, "A");
+  await b.join(room, "B");
+  assert.deepEqual((await lastState(b)).calls, []);
+  a.send({ type: "joincall", muted: false });
+  let s = await lastState(b, (s) => s.calls.length === 1);
+  const first = s.calls[0];
+  assert.deepEqual(first, { participantId: a.welcome.selfId, streamId: first.streamId, muted: false });
+  a.send({ type: "callstate", muted: true });
+  s = await lastState(b, (s) => s.calls[0]?.muted === true);
+  // Joining again gives a new stream, with the mute state that it names
+  a.send({ type: "joincall", muted: false });
+  s = await lastState(b, (s) => s.calls[0]?.streamId !== first.streamId);
+  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls[0].muted, false);
+  // A call stream does not share its ID with a presentation
+  const accepted = await b.present();
+  assert.notEqual(accepted.streamId, s.calls[0].streamId);
+  b.send({ type: "joincall", muted: true });
+  s = await lastState(a, (s) => s.calls.length === 2);
+  assert.deepEqual(
+    s.calls.map((call) => [call.participantId, call.muted]),
+    [
+      [a.welcome.selfId, false],
+      [b.welcome.selfId, true],
+    ],
+  );
+  // callstate of someone outside the call changes nothing
+  a.drain();
+  a.send({ type: "leavecall" });
+  await lastState(a, (s) => s.calls.length === 1);
+  a.send({ type: "callstate", muted: true });
+  await a.none((m) => m.type === "roomstate");
+  // The presenter keeps the seat for the grace period, but leaves the call
+  await b.terminate();
+  s = await lastState(a, (s) => s.presenters[0]?.status === "reconnecting");
+  assert.deepEqual(s.calls, []);
+  await a.close();
+});
+
+test("signals of a call stream go between its owner and anyone, but not between two others", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  const b = new Client("b");
+  const c = new Client("c");
+  await a.join(room, "A");
+  await b.join(room, "B");
+  await c.join(room, "C");
+  a.send({ type: "joincall", muted: false });
+  const { streamId } = (await lastState(c, (s) => s.calls.length === 1)).calls[0];
+  const sig = (to, kind = "offer") => ({
+    type: "signal",
+    to: to.welcome.selfId,
+    toConnection: to.welcome.connectionId,
+    streamId,
+    kind,
+    message: { type: kind, sdp: "x" },
+  });
+  // The owner offers to someone outside the call, who answers
+  a.send(sig(b));
+  const offer = await b.type("signal");
+  assert.equal(offer.from, a.welcome.selfId);
+  assert.equal(offer.streamId, streamId);
+  b.send(sig(a, "answer"));
+  assert.equal((await a.type("signal")).kind, "answer");
+  // Two others may not use the stream to signal each other
+  b.send(sig(c));
+  await c.none((m) => m.type === "signal");
+  // After leaving, the stream is gone
+  a.send({ type: "leavecall" });
+  await lastState(b, (s) => s.calls.length === 0);
+  a.send(sig(b));
+  await b.none((m) => m.type === "signal");
+  await a.close();
+  await b.close();
+  await c.close();
+});
+
 test("the room instance ID is the same for everyone in a room, and new for a room created again", async () => {
   const room = newRoom();
   const a = new Client("a");
