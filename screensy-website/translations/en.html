@@ -101,6 +101,10 @@
             >
                 Menu
             </button>
+            <button id="chat-button" type="button" aria-controls="chat" aria-expanded="false">
+                Chat
+                <span id="chat-unread" class="chat-unread hidden">0</span>
+            </button>
             <span id="viewer-count" class="hidden">
                 Viewers: <span id="viewer-count-value">0</span>
             </span>
@@ -292,6 +296,8 @@
         <span id="text-self-tile" class="hidden">You</span>
         <span id="text-mute" class="hidden">Mute</span>
         <span id="text-unmute" class="hidden">Unmute</span>
+        <span id="text-chat-reach" class="hidden">Reaches {open} of {total} people</span>
+        <span id="text-chat-alone" class="hidden">Nobody else is here yet</span>
         <template id="tile-template">
             <div class="tile">
                 <video autoplay muted playsinline></video>
@@ -377,5 +383,23 @@
             <span data-direction="receive">receiving</span>
         </div>
         <div id="stage" class="stage" data-count="0"></div>
+        <aside id="chat" class="chat hidden" aria-label="Chat">
+            <div class="chat-header">
+                <h2>Chat</h2>
+                <button id="chat-close" type="button" aria-label="Close the chat">×</button>
+            </div>
+            <p id="chat-reach" class="chat-reach"></p>
+            <ol id="chat-log" class="chat-log"></ol>
+            <form id="chat-form" class="chat-form">
+                <textarea
+                    id="chat-input"
+                    rows="2"
+                    maxlength="4000"
+                    placeholder="Message (Shift+Enter for a new line)"
+                    aria-label="Message"
+                ></textarea>
+                <button id="chat-send" type="submit">Send</button>
+            </form>
+        </aside>
     </body>
 </html>

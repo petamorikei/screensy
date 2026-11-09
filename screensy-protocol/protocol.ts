@@ -92,6 +92,17 @@ const SignalToServerSchema = z.discriminatedUnion("kind", [
 ]);
 
 /**
+ * Sends a WebRTC message of the mesh: the connection without media that every two connected participants keep, for
+ * the chat. Unlike "signal", it belongs to no stream, and any participant may send it to any other.
+ */
+const meshSignalToServer = { type: z.literal("meshsignal"), to: z.string(), toConnection: z.string() };
+const MeshSignalToServerSchema = z.discriminatedUnion("kind", [
+  z.object({ ...meshSignalToServer, ...signalPayloads.offer }),
+  z.object({ ...meshSignalToServer, ...signalPayloads.answer }),
+  z.object({ ...meshSignalToServer, ...signalPayloads.candidate }),
+]);
+
+/**
  * Every message after "join"
  */
 export const ClientMessageSchema = z.discriminatedUnion("type", [
@@ -101,6 +112,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   StopPresentingSchema,
   StreamStateSchema,
   SignalToServerSchema,
+  MeshSignalToServerSchema,
 ]);
 
 // Messages from the server to the client
@@ -117,6 +129,11 @@ const WelcomeSchema = z.object({
   selfId: z.string(),
   connectionId: z.string(),
   resumeToken: z.string(),
+  /**
+   * A random ID of this room, new whenever the room is created again: after everyone left, or after the server
+   * restarted. The chat history that a page keeps belongs to one of them.
+   */
+  roomInstanceId: z.string(),
   /**
    * The number of people that can present at the same time
    */
@@ -177,6 +194,16 @@ const SignalFromServerSchema = z.discriminatedUnion("kind", [
   z.object({ ...signalFromServer, ...signalPayloads.candidate }),
 ]);
 
+/**
+ * A WebRTC message of the mesh from another participant. The server sets "from" and "fromConnection".
+ */
+const meshSignalFromServer = { type: z.literal("meshsignal"), from: z.string(), fromConnection: z.string() };
+const MeshSignalFromServerSchema = z.discriminatedUnion("kind", [
+  z.object({ ...meshSignalFromServer, ...signalPayloads.offer }),
+  z.object({ ...meshSignalFromServer, ...signalPayloads.answer }),
+  z.object({ ...meshSignalFromServer, ...signalPayloads.candidate }),
+]);
+
 const PresentAcceptedSchema = z.object({
   type: z.literal("presentaccepted"),
   streamId: z.string(),
@@ -211,6 +238,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   WelcomeSchema,
   RoomStateSchema,
   SignalFromServerSchema,
+  MeshSignalFromServerSchema,
   PresentAcceptedSchema,
   PresentRejectedSchema,
   ReplacedSchema,
@@ -220,6 +248,7 @@ export type SignalKind = z.infer<typeof SignalToServerSchema>["kind"];
 export type IceServer = z.infer<typeof IceServerSchema>;
 export type MessageJoin = z.infer<typeof JoinSchema>;
 export type MessageSignalToServer = z.infer<typeof SignalToServerSchema>;
+export type MessageMeshSignalToServer = z.infer<typeof MeshSignalToServerSchema>;
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export type MessageWelcome = z.infer<typeof WelcomeSchema>;
 export type ParticipantState = z.infer<typeof ParticipantStateSchema>;
@@ -227,6 +256,7 @@ export type DisconnectReason = z.infer<typeof DisconnectReasonSchema>;
 export type PresenterState = z.infer<typeof PresenterStateSchema>;
 export type MessageRoomState = z.infer<typeof RoomStateSchema>;
 export type MessageSignalFromServer = z.infer<typeof SignalFromServerSchema>;
+export type MessageMeshSignalFromServer = z.infer<typeof MeshSignalFromServerSchema>;
 export type MessagePresentAccepted = z.infer<typeof PresentAcceptedSchema>;
 export type MessagePresentRejected = z.infer<typeof PresentRejectedSchema>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;

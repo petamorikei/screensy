@@ -1,9 +1,12 @@
 import type { MessageRoomState, MessageSignalFromServer, MessageWelcome, ServerMessage } from "screensy-protocol";
 import { BLUR_STORAGE_KEY, isBlurSupported, readBlurStrength } from "./blur.ts";
 import { capturesOwnAudio } from "./capture.ts";
+import { Chat } from "./chat.ts";
+import type { ChatMessage } from "./chat-protocol.ts";
 import { showPopup } from "./dom.ts";
 import { IncomingStream } from "./incoming-stream.ts";
 import { OutgoingStream } from "./outgoing-stream.ts";
+import { PeerMesh } from "./peer-mesh.ts";
 import type { QualitySettings } from "./quality.ts";
 import { displayMediaOptions, readQuality, writeQuality } from "./quality.ts";
 import type { MessageSender } from "./signaling.ts";
@@ -41,7 +44,18 @@ export class RoomController {
   private readonly sendMessage: MessageSender;
 
   private selfId: string | null = null;
+
+  /**
+   * This client's connection ID from the latest "welcome"
+   */
+  private connectionId: string | null = null;
   private state: MessageRoomState | null = null;
+
+  /**
+   * The connections without media to every other participant, for the chat
+   */
+  private readonly mesh: PeerMesh;
+  private readonly chat: Chat;
 
   /**
    * The room state before the current one, to tell who took over a seat
@@ -121,6 +135,18 @@ export class RoomController {
     this.signaling = new SignalingConnection(`${webSocketProtocol}://${location.host}${location.pathname}`);
     this.sendMessage = (message) => this.signaling.send(message);
 
+    this.mesh = new PeerMesh(() => this.rtcConfig, this.sendMessage);
+    this.chat = new Chat(this.roomId, this.mesh);
+    this.mesh.onopen = (peerId: string) => {
+      this.chat.handlePeerOpen(peerId);
+      this.render();
+    };
+    this.mesh.onclose = () => this.render();
+    this.mesh.onmessage = (peerId: string, data: string) => this.chat.handleData(peerId, data);
+    this.chat.onchange = (messages: readonly ChatMessage[]) => this.showChat(messages);
+    this.chat.onlive = () => this.ui.chat.addUnread();
+    this.ui.chat.onsend = (text: string) => this.sendChat(text);
+
     this.signaling.onopen = () => this.join();
     this.signaling.onclose = () => this.render();
     this.signaling.onmessage = (message: ServerMessage) => this.handleMessage(message);
@@ -150,6 +176,8 @@ export class RoomController {
 
   close(): void {
     this.signaling.close();
+    this.mesh.reset();
+    this.chat.close();
   }
 
   private get resumeStorageKey(): string {
@@ -177,6 +205,9 @@ export class RoomController {
         break;
       case "signal":
         this.handleSignal(message);
+        break;
+      case "meshsignal":
+        this.mesh.handleSignal(message).catch((error) => console.warn("Could not handle a mesh signal.", error));
         break;
       case "presentaccepted":
         if (this.outgoing != null && this.outgoing.streamId == null && !this.resolveOnNextState) {
@@ -214,6 +245,7 @@ export class RoomController {
   private handleReplaced(): void {
     const hadSeat = this.outgoing != null || this.dialogMode === "resume";
 
+    this.mesh.reset();
     this.outgoing?.stop();
     this.outgoing = null;
     this.resolveOnNextState = false;
@@ -232,12 +264,16 @@ export class RoomController {
 
   private handleWelcome(message: MessageWelcome): void {
     this.selfId = message.selfId;
+    this.connectionId = message.connectionId;
     this.maxPresenters = message.maxPresenters;
     this.rtcConfig = { iceServers: message.iceServers };
     writeStorage(getSessionStorage, this.resumeStorageKey, message.resumeToken);
 
-    // The connection ID changed, so every presenter opens new connections to this client
+    // The connection ID changed, so every presenter opens new connections to this client, and the mesh is rebuilt.
+    // The chat asks the peers for what it missed meanwhile.
     this.closeIncoming();
+    this.mesh.reset();
+    this.chat.setRoomInstance(message.roomInstanceId);
 
     if (this.outgoing != null) {
       // A "present" may have been lost with the old socket. The next room state tells whether the seat is still ours.
@@ -272,6 +308,10 @@ export class RoomController {
     }
 
     this.showParticipants(state, selfId);
+
+    if (this.connectionId != null) {
+      this.mesh.sync(state.participants, selfId, this.connectionId);
+    }
 
     if (this.outgoing != null) {
       if (this.outgoing.streamId == null) {
@@ -550,6 +590,30 @@ export class RoomController {
     }
   }
 
+  /**
+   * Sends a chat message with the own participant ID and name, as the latest room state has them
+   */
+  private sendChat(text: string): boolean {
+    const self = this.state?.participants.find((participant) => participant.id === this.selfId);
+
+    if (self == null) {
+      return false;
+    }
+
+    return this.chat.send(text, self.id, self.name);
+  }
+
+  private showChat(messages: readonly ChatMessage[]): void {
+    this.ui.chat.showMessages(
+      messages.map((message) => ({
+        name: this.ui.displayName(message.name, message.participantId),
+        sentAt: message.sentAt,
+        text: message.text,
+        self: this.chat.isOwn(message),
+      })),
+    );
+  }
+
   private showParticipants(state: MessageRoomState, selfId: string): void {
     const seats = new Map(state.presenters.map((presenter) => [presenter.participantId, presenter]));
     const rank = (id: string) => (seats.has(id) ? 0 : id === selfId ? 1 : 2);
@@ -745,6 +809,8 @@ export class RoomController {
 
     this.ui.stage.showTiles(tiles);
     this.ui.notices.showStatus(status);
+    this.ui.chat.setEnabled(ready && this.chat.ready);
+    this.ui.chat.setReach(this.mesh.openPeers().length, this.mesh.targetCount);
     this.updateEchoProtection(tiles);
 
     const counting = tiles.some((tile) => tile.countdown != null);
