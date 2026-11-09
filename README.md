@@ -7,7 +7,7 @@
 Screensy is a simple screen sharing solution. Nothing more, nothing less.
 
 This repository is a fork of [screensy/screensy](https://github.com/screensy/screensy).
-It adds several presenters at once, reconnection, quality settings and
+It adds several presenters at once, a chat, reconnection, quality settings and
 Cloudflare Workers, among other things; see [CHANGELOG.md](CHANGELOG.md). The
 setup below is for this fork.
 
@@ -15,7 +15,7 @@ It consists of two parts, the rendezvous part which runs on the server, and the
 website part which runs in the user's browser. The rendezvous server is only
 used for protocol negotiation and discovery of the participants. The video
 stream is directly sent from the browser of each presenter to the browser of
-each viewer.
+each viewer, and the chat messages go directly between the browsers too.
 All traffic (between rendezvous and browser and between browsers) is encrypted
 by default.
 

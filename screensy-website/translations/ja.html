@@ -97,6 +97,10 @@
             >
                 メニュー
             </button>
+            <button id="chat-button" type="button" aria-controls="chat" aria-expanded="false">
+                チャット
+                <span id="chat-unread" class="chat-unread hidden">0</span>
+            </button>
             <span id="viewer-count" class="hidden">
                 視聴者: <span id="viewer-count-value">0</span>
             </span>
@@ -279,6 +283,8 @@
         <span id="text-self-tile" class="hidden">あなた</span>
         <span id="text-mute" class="hidden">消音</span>
         <span id="text-unmute" class="hidden">消音を解除</span>
+        <span id="text-chat-reach" class="hidden">{total}人中{open}人に届きます</span>
+        <span id="text-chat-alone" class="hidden">まだ誰もいません</span>
         <template id="tile-template">
             <div class="tile">
                 <video autoplay muted playsinline></video>
@@ -362,5 +368,23 @@
             <span data-direction="receive">受信</span>
         </div>
         <div id="stage" class="stage" data-count="0"></div>
+        <aside id="chat" class="chat hidden" aria-label="チャット">
+            <div class="chat-header">
+                <h2>チャット</h2>
+                <button id="chat-close" type="button" aria-label="チャットを閉じる">×</button>
+            </div>
+            <p id="chat-reach" class="chat-reach"></p>
+            <ol id="chat-log" class="chat-log"></ol>
+            <form id="chat-form" class="chat-form">
+                <textarea
+                    id="chat-input"
+                    rows="2"
+                    maxlength="4000"
+                    placeholder="メッセージ（Shift+Enterで改行）"
+                    aria-label="メッセージ"
+                ></textarea>
+                <button id="chat-send" type="submit">送信</button>
+            </form>
+        </aside>
     </body>
 </html>

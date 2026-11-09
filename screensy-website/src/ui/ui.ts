@@ -1,4 +1,5 @@
 import { getElement } from "../dom.ts";
+import { ChatPanel } from "./chat-panel.ts";
 import { PresentDialog } from "./dialog.ts";
 import { Menu } from "./menu.ts";
 import { Notices } from "./notices.ts";
@@ -14,6 +15,7 @@ export class Ui {
   readonly menu: Menu;
   readonly dialog: PresentDialog;
   readonly notices: Notices;
+  readonly chat: ChatPanel;
 
   private readonly anonymousName: string;
 
@@ -24,6 +26,7 @@ export class Ui {
     this.menu = new Menu((name, participantId) => this.displayName(name, participantId));
     this.dialog = new PresentDialog();
     this.notices = new Notices();
+    this.chat = new ChatPanel();
   }
 
   /**

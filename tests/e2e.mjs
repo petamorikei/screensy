@@ -179,6 +179,20 @@ const INIT_SCRIPT = `
     },
   });
 
+  // Drops the next live chat messages that the page sends on its data channels, like messages lost on the way:
+  // __chatDropLive is how many sends (one per peer) to drop
+  window.__chatDropLive = 0;
+  const nativeChannelSend = RTCDataChannel.prototype.send;
+  Object.assign(RTCDataChannel.prototype, {
+    send(data) {
+      if (window.__chatDropLive > 0 && typeof data === "string" && data.startsWith('{"type":"messages","live":true')) {
+        window.__chatDropLive--;
+        return;
+      }
+      return nativeChannelSend.call(this, data);
+    },
+  });
+
   // Headless Chrome cannot accept the screen picker. __nextCapture sets the size, a fixed color and audio of the next
   // capture, its frame rate and the surface it reports; by default it is 640x360 at 20 fps, with changing colors and
 // no audio.
@@ -526,7 +540,7 @@ const main = async () => {
     const s = await b.waitFor("video", (s) => s.videoPlaying);
     assert.equal(s.lang, "ja");
     assert.equal(s.status, null);
-    assert.deepEqual(s.toolbar, ["present-button", "menu-button"]);
+    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button"]);
     await a.waitFor("viewer count 1", (s) => s.viewers === "1");
     await b.shot("3-viewing-ja");
     await a.shot("3b-presenting-1-viewer-en");
@@ -546,7 +560,7 @@ const main = async () => {
     assert.match(sa.noticeText[0], /Bob/);
     assert.equal(sa.captureLive, false);
     await a.shot("5-taken-over-notice-en");
-    assert.deepEqual(sa.toolbar, ["present-button", "menu-button"]);
+    assert.deepEqual(sa.toolbar, ["present-button", "menu-button", "chat-button"]);
   });
 
   await step("browser 'Stop sharing' (track ended) stops presenting", async () => {
@@ -659,7 +673,7 @@ const main = async () => {
     await a.waitFor("A waiting", (s) => s.status === "status-waiting");
     const s = await b.state();
     assert.equal(s.status, "status-waiting");
-    assert.deepEqual(s.toolbar, ["present-button", "menu-button"]);
+    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button"]);
   });
 
   await step("duplicated presenter tab: the seat moves to the duplicate, the original stops", async () => {
@@ -1117,7 +1131,7 @@ const main = async () => {
     });
     await e.goto(`${ORIGIN}/${room}`);
     const se = await e.waitFor("E joined", (s) => s.status === "status-waiting");
-    assert.deepEqual(se.toolbar, ["menu-button"]);
+    assert.deepEqual(se.toolbar, ["menu-button", "chat-button"]);
     assert.equal(await e.eval(isShown("menu-quality")), false);
   });
 
@@ -1789,6 +1803,150 @@ const main = async () => {
     }
   });
 
+  // --- Chat: peer to peer on the data channels of the mesh ---
+
+  const CHAT = `(() => {
+    const unread = document.getElementById("chat-unread");
+    return {
+      open: !document.getElementById("chat").classList.contains("hidden"),
+      unread: unread.classList.contains("hidden") ? 0 : Number(unread.textContent),
+      reach: document.getElementById("chat-reach").textContent,
+      enabled: !document.getElementById("chat-input").disabled,
+      input: document.getElementById("chat-input").value,
+      log: [...document.querySelectorAll("#chat-log .chat-message")].map((li) => ({
+        name: li.querySelector(".chat-name").textContent,
+        text: li.querySelector(".chat-text").textContent,
+        self: li.hasAttribute("data-self"),
+      })),
+    };
+  })()`;
+  const waitChat = async (page, desc, pred, timeout = 10000) => {
+    const end = Date.now() + timeout;
+    let last;
+    while (Date.now() < end) {
+      last = await page.eval(CHAT);
+      if (pred(last)) return last;
+      await sleep(100);
+    }
+    throw new Error(`${page.label}: timeout waiting for ${desc}\nlast chat: ${JSON.stringify(last, null, 1)}`);
+  };
+  // Types the text and presses Enter, with the given modifiers of the key event
+  const pressEnter = (page, text, init = {}) =>
+    page.eval(
+      `(() => {
+        const input = document.getElementById("chat-input");
+        input.value = ${JSON.stringify(text)};
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...${JSON.stringify(init)} }));
+      })()`,
+    );
+  const texts = (chat) => chat.log.map((message) => `${message.name}: ${message.text}`);
+  const withName = (name) => `try { localStorage.setItem("screensy.name", ${JSON.stringify(name)}); } catch {}`;
+  const chatRoom = `${ORIGIN}/#ChatRoom${Date.now()}`;
+  let c1;
+  let c2;
+  let c3;
+
+  await step("chat: two pages exchange messages in the same order, with an unread count", async () => {
+    c1 = await newPage(cdp, "C1", { initExtra: withName("Ann") });
+    c2 = await newPage(cdp, "C2", { initExtra: withName("Ben") });
+    await c1.goto(chatRoom);
+    await c2.goto(chatRoom);
+    await waitChat(c1, "C1 reaches C2", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    await waitChat(c2, "C2 reaches C1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    await c1.click("#chat-button");
+    await pressEnter(c1, "hello from Ann");
+    const sent = await waitChat(c1, "C1 shows its message", (c) => c.log.length === 1);
+    assert.equal(sent.input, "", "the input is cleared");
+    assert.deepEqual(sent.log, [{ name: "Ann", text: "hello from Ann", self: true }]);
+    const got = await waitChat(c2, "C2 gets it", (c) => c.log.length === 1);
+    assert.deepEqual(got.log, [{ name: "Ann", text: "hello from Ann", self: false }]);
+    assert.equal(got.unread, 1);
+    assert.equal(got.open, false);
+    await c2.click("#chat-button");
+    const opened = await waitChat(c2, "C2 opened the chat", (c) => c.open);
+    assert.equal(opened.unread, 0);
+    await pressEnter(c2, "hi Ann\nsecond line");
+    const both = await waitChat(c1, "C1 gets the answer", (c) => c.log.length === 2);
+    assert.deepEqual(texts(both), ["Ann: hello from Ann", "Ben: hi Ann\nsecond line"]);
+    assert.equal(both.unread, 0, "nothing is unread while the chat is open");
+    assert.deepEqual(texts(await c2.eval(CHAT)), texts(both));
+  });
+
+  await step("chat: a late joiner gets the history from the peers", async () => {
+    c3 = await newPage(cdp, "C3", { initExtra: withName("Cy") });
+    await c3.goto(chatRoom);
+    const history = await waitChat(c3, "C3 gets the history", (c) => c.log.length === 2);
+    assert.deepEqual(texts(history), ["Ann: hello from Ann", "Ben: hi Ann\nsecond line"]);
+    assert.equal(history.unread, 0, "the history does not count as unread");
+    await waitChat(c3, "C3 reaches both", (c) => c.reach === "Reaches 2 of 2 people");
+  });
+
+  await step("chat: a lost message is asked for again when the next one shows the gap", async () => {
+    // One send per peer
+    await c1.eval("window.__chatDropLive = 2");
+    await pressEnter(c1, "lost on the way");
+    await sleep(800);
+    assert.equal((await c2.eval(CHAT)).log.length, 2, "C2 did not get it");
+    await pressEnter(c1, "after the lost one");
+    // Much sooner than the periodic summary
+    for (const page of [c2, c3]) {
+      const chat = await waitChat(page, `${page.label} recovers it`, (c) => c.log.length === 4, 3000);
+      assert.deepEqual(texts(chat).slice(2), ["Ann: lost on the way", "Ann: after the lost one"]);
+    }
+  });
+
+  await step("chat: Enter while an input method composes, and Shift+Enter, do not send", async () => {
+    await pressEnter(c3, "へんかんちゅう", { isComposing: true });
+    await pressEnter(c3, "へんかんちゅう", { shiftKey: true });
+    await sleep(500);
+    const chat = await c3.eval(CHAT);
+    assert.equal(chat.input, "へんかんちゅう");
+    assert.equal(chat.log.length, 4);
+    await pressEnter(c3, "変換しました");
+    await waitChat(c1, "C1 gets the message of C3", (c) => c.log.length === 5);
+  });
+
+  await step("chat: a reload keeps the history without duplicates, and the page sends again", async () => {
+    const before = texts(await c1.eval(CHAT));
+    await c2.reload();
+    const restored = await waitChat(c2, "C2 restored", (c) => c.enabled && c.log.length === before.length);
+    assert.deepEqual(texts(restored), before);
+    assert.ok(restored.log[1].self, "the message from before the reload is still the own one");
+    await waitChat(c2, "C2 reaches both again", (c) => c.reach === "Reaches 2 of 2 people");
+    // The peers send their summaries when the channels open: nothing is added twice
+    await sleep(1000);
+    assert.deepEqual(texts(await c2.eval(CHAT)), before);
+    await pressEnter(c2, "back after the reload");
+    for (const page of [c1, c3]) {
+      await waitChat(page, `${page.label} gets the message after the reload`, (c) => c.log.length === 6);
+    }
+  });
+
+  await step("chat: every page shows the same order", async () => {
+    const [l1, l2, l3] = await Promise.all([c1, c2, c3].map((page) => page.eval(CHAT)));
+    assert.equal(l1.log.length, 6);
+    assert.deepEqual(texts(l2), texts(l1));
+    assert.deepEqual(texts(l3), texts(l1));
+    await c1.shot("chat");
+  });
+
+  await step("chat: a room that was created again does not get the old history", async () => {
+    for (const page of [c2, c3]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+    // Leave and come back in the same tab, so that sessionStorage stays: the room is deleted meanwhile
+    await c1.goto("about:blank");
+    await sleep(500);
+    await c1.goto(chatRoom);
+    const chat = await waitChat(
+      c1,
+      "C1 back in an empty room",
+      (c) => c.enabled && c.reach === "Nobody else is here yet",
+    );
+    assert.deepEqual(chat.log, []);
+    await cdp.send("Target.closeTarget", { targetId: c1.targetId });
+  });
+
   // --- Cloudflare: the Worker, Static Assets and the Durable Object in wrangler dev ---
 
   if (process.env.SKIP_CLOUDFLARE) {
@@ -1839,6 +1997,10 @@ const main = async () => {
       const viewer = await newPage(cdp, "W2");
       await viewer.goto(`${CF_ORIGIN}/${s.hash}`);
       await viewer.waitFor("W2 video through the Worker's signaling", (s) => s.videoPlaying, 20000);
+      // The mesh of the chat is signaled through the Durable Object too
+      await waitChat(viewer, "W2 reaches W1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people", 20000);
+      await pressEnter(viewer, "through the Worker");
+      await waitChat(presenter, "W1 gets the chat message", (c) => texts(c).includes("Guest 2: through the Worker"));
       for (const page of [presenter, viewer]) {
         await cdp.send("Target.closeTarget", { targetId: page.targetId });
       }

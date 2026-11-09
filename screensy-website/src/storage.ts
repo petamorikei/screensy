@@ -1,5 +1,6 @@
 export const NAME_STORAGE_KEY = "screensy.name";
 export const RESUME_STORAGE_PREFIX = "screensy.resume.";
+export const CHAT_STORAGE_PREFIX = "screensy.chat.";
 
 /**
  * Reads a value from Web Storage. Storage can be unavailable, for example in a private window.

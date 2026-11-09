@@ -49,6 +49,13 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   Each presentation has its own mute and full-screen buttons. While a
     presenter shares sound that may contain the other presenters' sound, they
     are muted on that presenter's page, so that it does not echo.
+-   A chat for everyone in the room, opened with the "Chat" button, which
+    counts the unread messages. The messages go directly between the
+    browsers, not through the server. Someone who joins later gets the
+    earlier messages from the others, a lost message is fetched again, and
+    every page shows the messages in the same order. The history survives a
+    reload, and is gone when everyone has left the room. The panel shows how
+    many of the others the chat reaches.
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.

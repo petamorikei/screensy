@@ -8,6 +8,7 @@ import type {
   DisconnectReason,
   IceServer,
   MessageJoin,
+  MessageMeshSignalToServer,
   MessageRoomState,
   MessageSignalToServer,
   PresenterState,
@@ -309,6 +310,11 @@ class Room {
   private nextConnectionId = 0;
   private nextStreamId = 0;
 
+  /**
+   * Tells this room apart from an earlier room of the same ID, whose chat history the pages may still keep
+   */
+  private readonly instanceId = crypto.randomUUID();
+
   private readonly config: RoomConfig;
   private readonly onEmpty: () => void;
   private readonly release: (connection: Connection) => void;
@@ -361,6 +367,7 @@ class Room {
       selfId: participant.id,
       connectionId: participant.connectionId,
       resumeToken: participant.resumeToken,
+      roomInstanceId: this.instanceId,
       maxPresenters: this.config.maxPresenters,
       iceServers: iceServersFor(this.config.stunUrls, connection.hostname),
     });
@@ -407,6 +414,9 @@ class Room {
       }
       case "signal":
         this.relaySignal(participant, message);
+        break;
+      case "meshsignal":
+        this.relayMeshSignal(participant, message);
         break;
     }
   }
@@ -507,15 +517,24 @@ class Room {
     this.presenters = this.presenters.filter((presenter) => presenter.participantId !== participant.id);
   }
 
-  private relaySignal(sender: Participant, message: MessageSignalToServer): void {
+  /**
+   * The socket of the recipient of a signal, if the recipient is another participant who is connected with the
+   * connection that the sender named
+   */
+  private recipientConnection(sender: Participant, message: { to: string; toConnection: string }): Connection | null {
     const recipient = this.participants.get(message.to);
 
-    if (
-      recipient == null ||
-      recipient.connection == null ||
-      recipient.id === sender.id ||
-      recipient.connectionId !== message.toConnection
-    ) {
+    if (recipient == null || recipient.id === sender.id || recipient.connectionId !== message.toConnection) {
+      return null;
+    }
+
+    return recipient.connection;
+  }
+
+  private relaySignal(sender: Participant, message: MessageSignalToServer): void {
+    const connection = this.recipientConnection(sender, message);
+
+    if (connection == null) {
       return;
     }
 
@@ -525,14 +544,28 @@ class Room {
       return;
     }
 
-    if (presenter.participantId !== sender.id && presenter.participantId !== recipient.id) {
+    if (presenter.participantId !== sender.id && presenter.participantId !== message.to) {
       // Viewers may not signal each other
       return;
     }
 
     // The stream ID and the WebRTC payload (kind and message) go through as they are
     const { to: _to, toConnection: _toConnection, ...signal } = message;
-    send(recipient.connection, { ...signal, from: sender.id, fromConnection: sender.connectionId });
+    send(connection, { ...signal, from: sender.id, fromConnection: sender.connectionId });
+  }
+
+  /**
+   * Relays a signal of the mesh. Every two connected participants may connect, so only the recipient is checked.
+   */
+  private relayMeshSignal(sender: Participant, message: MessageMeshSignalToServer): void {
+    const connection = this.recipientConnection(sender, message);
+
+    if (connection == null) {
+      return;
+    }
+
+    const { to: _to, toConnection: _toConnection, ...signal } = message;
+    send(connection, { ...signal, from: sender.id, fromConnection: sender.connectionId });
   }
 
   private handleDisconnect(participant: Participant, reason: DisconnectReason): void {

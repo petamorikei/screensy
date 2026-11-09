@@ -563,6 +563,74 @@ test("signal payloads are validated, and relayed with every field", async () => 
   await v.close();
 });
 
+test("mesh signals go between any two connected participants", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  const b = new Client("b");
+  const c = new Client("c");
+  await a.join(room, "A");
+  await b.join(room, "B");
+  await c.join(room, "C");
+  const sig = (to, toConnection = to.welcome.connectionId, kind = "offer", message = { type: "offer", sdp: "x" }) => ({
+    type: "meshsignal",
+    to: to.welcome.selfId,
+    toConnection,
+    kind,
+    message,
+  });
+  // Nobody presents: viewers may signal each other on the mesh
+  a.send(sig(b));
+  const got = await b.type("meshsignal");
+  assert.equal(got.from, a.welcome.selfId);
+  assert.equal(got.fromConnection, a.welcome.connectionId);
+  assert.equal(got.kind, "offer");
+  assert.deepEqual(got.message, { type: "offer", sdp: "x" });
+  assert.equal(got.to, undefined, "the recipient fields are not relayed");
+  assert.equal(got.toConnection, undefined);
+  b.send(sig(a, a.welcome.connectionId, "answer", { type: "answer", sdp: "y" }));
+  assert.equal((await a.type("meshsignal")).kind, "answer");
+  // To oneself, to a wrong connection, to someone unknown, or with a malformed payload: dropped
+  c.send(sig(c));
+  c.send(sig(b, "999999"));
+  c.send({ ...sig(b), to: "999999" });
+  c.send(sig(b, b.welcome.connectionId, "candidate", { candidate: "x", sdpMLineIndex: "0" }));
+  await b.none((m) => m.type === "meshsignal");
+  await c.none((m) => m.type === "meshsignal");
+  // An old connection ID after the recipient rejoined with its token: dropped
+  const b2 = new Client("b2");
+  await b2.join(room, "B", b.welcome.resumeToken);
+  a.send(sig(b2, b.welcome.connectionId));
+  await b2.none((m) => m.type === "meshsignal");
+  a.send(sig(b2));
+  await b2.type("meshsignal");
+  await a.close();
+  await b2.close();
+  await c.close();
+});
+
+test("the room instance ID is the same for everyone in a room, and new for a room created again", async () => {
+  const room = newRoom();
+  const a = new Client("a");
+  const b = new Client("b");
+  const wa = await a.join(room, "A");
+  const wb = await b.join(room, "B");
+  assert.equal(typeof wa.roomInstanceId, "string");
+  assert.ok(wa.roomInstanceId.length > 0);
+  assert.equal(wb.roomInstanceId, wa.roomInstanceId);
+  // Rejoining keeps the room and its instance
+  const a2 = new Client("a2");
+  assert.equal((await a2.join(room, "A", wa.resumeToken)).roomInstanceId, wa.roomInstanceId);
+  const other = new Client("other");
+  assert.notEqual((await other.join(newRoom(), "O")).roomInstanceId, wa.roomInstanceId);
+  await a2.close();
+  await b.close();
+  await other.close();
+  await sleep(200);
+  const c = new Client("c");
+  assert.notEqual((await c.join(room, "C")).roomInstanceId, wa.roomInstanceId, "the deleted room had another");
+  await c.close();
+});
+
 test("name normalization and setname", async () => {
   const room = newRoom();
   const a = new Client("a");

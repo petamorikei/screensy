@@ -486,6 +486,114 @@ button[type="submit"]:hover {
   margin-top: 18px;
 }
 
+/* The chat, a panel at the right that stays open while the screens play. A simple first version. */
+.chat-unread {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 4px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 0.7em;
+  background-color: #2f6fdb;
+  font-size: 0.8em;
+  text-align: center;
+}
+
+.chat {
+  position: fixed;
+  inset: 54px 10px 10px auto;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: min(40ch, calc(100% - 20px));
+  box-sizing: border-box;
+  padding: 10px 14px 14px;
+  border: 1px solid #555555;
+  border-radius: 10px;
+  color: white;
+  background-color: #2a2a2a;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-header h2 {
+  margin: 0;
+  font-size: 1.05em;
+}
+
+.chat-header button {
+  padding: 0 10px;
+}
+
+.chat-reach {
+  margin: 6px 0 8px;
+  color: #b0b0b0;
+  font-size: 0.85em;
+}
+
+.chat-reach-partial {
+  color: #f0d090;
+}
+
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.chat-message {
+  margin: 0 0 10px;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.85em;
+}
+
+.chat-name {
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.chat-message[data-self] .chat-name {
+  color: #9cc0ff;
+}
+
+.chat-time {
+  color: #999999;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-text {
+  margin: 2px 0 0;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chat-form textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  font: inherit;
+}
+
 @media screen and (min-width: 800px) {
   .popup h1 {
     text-align: center;
