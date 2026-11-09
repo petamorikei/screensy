@@ -5,6 +5,7 @@ import { Chat } from "./chat.ts";
 import type { ChatMessage } from "./chat-protocol.ts";
 import { showPopup } from "./dom.ts";
 import { IncomingStream } from "./incoming-stream.ts";
+import { MICROPHONE_CONSTRAINTS, OutgoingCall } from "./outgoing-call.ts";
 import { OutgoingStream } from "./outgoing-stream.ts";
 import { PeerMesh } from "./peer-mesh.ts";
 import type { QualitySettings } from "./quality.ts";
@@ -23,10 +24,22 @@ import {
 } from "./storage.ts";
 import type { TileContext } from "./tile-views.ts";
 import { ownTile, tileViews } from "./tile-views.ts";
+import type { EchoChoice } from "./ui/call-panel.ts";
 import type { DialogMode, StatusId, TileView } from "./ui/types.ts";
 import { Ui } from "./ui/ui.ts";
 
 const STATS_INTERVAL_MS = 1000;
+
+/**
+ * The participant who sends a stream that this client may receive: a live presenter, or a participant in the call
+ */
+const streamOwner = (state: MessageRoomState, streamId: string): string | null => {
+  const presenter = state.presenters.find(
+    (presenter) => presenter.streamId === streamId && presenter.status === "live",
+  );
+  const call = state.calls.find((call) => call.streamId === streamId);
+  return presenter?.participantId ?? call?.participantId ?? null;
+};
 
 /**
  * Keeps this client in sync with the room: presents the local screen, receives the screens of others, and shows the
@@ -72,7 +85,33 @@ export class RoomController {
    */
   private echoNoticeShown = false;
   private outgoing: OutgoingStream | null = null;
+
+  /**
+   * The received streams, by stream ID: the presentations and the microphones of the participants in the call
+   */
   private readonly incoming = new Map<string, IncomingStream>();
+
+  /**
+   * This client's part of the voice call, while it is in the call
+   */
+  private call: OutgoingCall | null = null;
+
+  /**
+   * "joincall" was sent, and no room state has had this client's call since
+   */
+  private awaitingCall = false;
+
+  /**
+   * Asking for the microphone after a click on "Join call"
+   */
+  private joiningCall = false;
+
+  private readonly canCall: boolean;
+
+  /**
+   * The choice about the shared sound, which belongs to one capture: a new screen asks again
+   */
+  private echoChoice: { stream: MediaStream; choice: EchoChoice } | null = null;
 
   /**
    * Set by "welcome" while presenting: the next "roomstate" decides whether this client still holds its seat.
@@ -125,6 +164,7 @@ export class RoomController {
     this.roomId = roomId.toLowerCase();
     this.offerToPresent = isCreator;
     this.canPresent = "getDisplayMedia" in navigator.mediaDevices;
+    this.canCall = "getUserMedia" in navigator.mediaDevices;
     this.ui = new Ui();
     this.quality = readQuality();
     this.ui.menu.setQuality(this.quality);
@@ -146,6 +186,11 @@ export class RoomController {
     this.chat.onchange = (messages: readonly ChatMessage[]) => this.showChat(messages);
     this.chat.onlive = () => this.ui.chat.addUnread();
     this.ui.chat.onsend = (text: string) => this.sendChat(text);
+    this.ui.call.onjoin = () => this.joinCall();
+    this.ui.call.onleave = () => this.leaveCall();
+    this.ui.call.onmute = (muted: boolean) => this.setCallMuted(muted);
+    this.ui.call.onechochoice = (choice: EchoChoice) => this.chooseEcho(choice);
+    this.ui.callAudio.onblocked = () => this.ui.notices.showNotice("notice-call-audio-blocked");
 
     this.signaling.onopen = () => this.join();
     this.signaling.onclose = () => this.render();
@@ -178,6 +223,8 @@ export class RoomController {
     this.signaling.close();
     this.mesh.reset();
     this.chat.close();
+    this.call?.stop();
+    this.call = null;
   }
 
   private get resumeStorageKey(): string {
@@ -249,6 +296,10 @@ export class RoomController {
     this.outgoing?.stop();
     this.outgoing = null;
     this.resolveOnNextState = false;
+    // The other tab has to join the call itself
+    this.call?.stop();
+    this.call = null;
+    this.awaitingCall = false;
 
     if (this.dialogMode === "resume") {
       this.dialogMode = null;
@@ -279,6 +330,13 @@ export class RoomController {
       // A "present" may have been lost with the old socket. The next room state tells whether the seat is still ours.
       this.outgoing.reset();
       this.resolveOnNextState = true;
+    }
+
+    if (this.call != null) {
+      // The server drops the call with the old socket. The microphone is still here, so join again.
+      this.call.reset();
+      this.sendMessage({ type: "joincall", muted: this.call.muted });
+      this.awaitingCall = true;
     }
   }
 
@@ -312,6 +370,8 @@ export class RoomController {
     if (this.connectionId != null) {
       this.mesh.sync(state.participants, selfId, this.connectionId);
     }
+
+    this.syncCall(state, selfId);
 
     if (this.outgoing != null) {
       if (this.outgoing.streamId == null) {
@@ -350,13 +410,10 @@ export class RoomController {
     }
 
     for (const [streamId, stream] of this.incoming) {
-      const presenter = state.presenters.find((presenter) => presenter.streamId === streamId);
       const participant = state.participants.find((participant) => participant.id === stream.presenterId);
 
       if (
-        presenter == null ||
-        presenter.status !== "live" ||
-        presenter.participantId !== stream.presenterId ||
+        streamOwner(state, streamId) !== stream.presenterId ||
         participant?.connectionId !== stream.presenterConnection
       ) {
         stream.close();
@@ -385,21 +442,20 @@ export class RoomController {
       return;
     }
 
+    if (this.call != null && message.streamId === this.call.streamId) {
+      this.call.handleSignal(message).catch((error) => console.warn("Could not handle a signal.", error));
+      return;
+    }
+
     const state = this.state;
 
     if (state == null) {
       return;
     }
 
-    const presenter = state.presenters.find(
-      (presenter) =>
-        presenter.streamId === message.streamId &&
-        presenter.participantId === message.from &&
-        presenter.status === "live",
-    );
     const participant = state.participants.find((participant) => participant.id === message.from);
 
-    if (presenter == null || participant?.connectionId !== message.fromConnection) {
+    if (streamOwner(state, message.streamId) !== message.from || participant?.connectionId !== message.fromConnection) {
       // A signal of an old stream or an old connection
       return;
     }
@@ -492,6 +548,7 @@ export class RoomController {
       this.sendMessage,
       this.quality,
       this.blurStrength,
+      (stream: MediaStream) => this.screenAudioSuppressed(stream),
     );
     this.outgoing = outgoing;
 
@@ -580,6 +637,117 @@ export class RoomController {
   }
 
   /**
+   * Asks for the microphone and joins the call. Called from the click on "Join call".
+   */
+  private joinCall(): void {
+    if (this.call != null || this.joiningCall || !this.canCall) {
+      return;
+    }
+
+    // Call getUserMedia before anything else, while the click still counts as a user activation
+    let microphone: Promise<MediaStream>;
+
+    try {
+      microphone = navigator.mediaDevices.getUserMedia(MICROPHONE_CONSTRAINTS);
+    } catch (error) {
+      microphone = Promise.reject(error);
+    }
+
+    this.joiningCall = true;
+    this.render();
+
+    microphone.then(
+      (mediaStream: MediaStream) => {
+        this.joiningCall = false;
+        const call = new OutgoingCall(mediaStream, () => this.rtcConfig, this.sendMessage);
+        this.call = call;
+
+        // For example when the microphone is unplugged
+        for (const track of mediaStream.getAudioTracks()) {
+          track.addEventListener("ended", () => {
+            if (this.call === call) {
+              this.leaveCall();
+            }
+          });
+        }
+
+        // If the socket is down, this message is lost, and the next "welcome" sends it again
+        this.sendMessage({ type: "joincall", muted: false });
+        this.awaitingCall = true;
+        this.render();
+      },
+      () => {
+        this.joiningCall = false;
+        this.ui.notices.showNotice("notice-microphone-denied");
+        this.render();
+      },
+    );
+  }
+
+  private leaveCall(): void {
+    if (this.call == null) {
+      return;
+    }
+
+    this.sendMessage({ type: "leavecall" });
+    this.call.stop();
+    this.call = null;
+    this.awaitingCall = false;
+    this.render();
+  }
+
+  private setCallMuted(muted: boolean): void {
+    if (this.call == null) {
+      return;
+    }
+
+    this.call.setMuted(muted);
+    this.sendMessage({ type: "callstate", muted });
+    this.render();
+  }
+
+  /**
+   * Keeps this client's call as the room state has it: the stream ID comes from there, and a call that the server
+   * dropped, for example with a replaced socket, is joined again.
+   */
+  private syncCall(state: MessageRoomState, selfId: string): void {
+    const own = state.calls.find((call) => call.participantId === selfId);
+    const call = this.call;
+
+    if (call == null) {
+      if (own != null) {
+        this.sendMessage({ type: "leavecall" });
+      }
+
+      return;
+    }
+
+    if (own == null) {
+      // Unless the "joincall" is still on its way
+      if (!this.awaitingCall) {
+        this.sendMessage({ type: "joincall", muted: call.muted });
+        this.awaitingCall = true;
+      }
+
+      return;
+    }
+
+    this.awaitingCall = false;
+    call.adopt(own.streamId);
+    call.sync(state.participants, selfId);
+  }
+
+  /**
+   * Remembers the choice about the shared sound for the current capture
+   */
+  private chooseEcho(choice: EchoChoice): void {
+    if (this.outgoing != null) {
+      this.echoChoice = { stream: this.outgoing.mediaStream, choice };
+      this.render();
+    }
+  }
+
+  /**
    * Remembers the name and tells the room. While disconnected, the next "join" carries it.
    */
   private changeName(name: string): void {
@@ -616,6 +784,7 @@ export class RoomController {
 
   private showParticipants(state: MessageRoomState, selfId: string): void {
     const seats = new Map(state.presenters.map((presenter) => [presenter.participantId, presenter]));
+    const inCall = new Set(state.calls.map((call) => call.participantId));
     const rank = (id: string) => (seats.has(id) ? 0 : id === selfId ? 1 : 2);
     const participants = [...state.participants].sort((a, b) => rank(a.id) - rank(b.id));
 
@@ -626,6 +795,7 @@ export class RoomController {
         you: participant.id === selfId,
         presenting: seats.has(participant.id),
         reconnecting: seats.get(participant.id)?.status === "reconnecting",
+        inCall: inCall.has(participant.id),
       })),
     );
   }
@@ -811,6 +981,7 @@ export class RoomController {
     this.ui.notices.showStatus(status);
     this.ui.chat.setEnabled(ready && this.chat.ready);
     this.ui.chat.setReach(this.mesh.openPeers().length, this.mesh.targetCount);
+    this.showCall(ready);
     this.updateEchoProtection(tiles);
 
     const counting = tiles.some((tile) => tile.countdown != null);
@@ -851,10 +1022,62 @@ export class RoomController {
   }
 
   /**
-   * Mutes the other presenters on this page while the own capture may contain this page's sound
+   * The buttons and the participants of the call, and the call's sound. The sound keeps playing while the server is
+   * away, from the last room state: it goes from browser to browser.
+   */
+  private showCall(ready: boolean): void {
+    const calls = this.state?.calls ?? [];
+
+    this.ui.callAudio.show(
+      calls.flatMap((call) => {
+        const stream = call.participantId === this.selfId ? null : this.incoming.get(call.streamId)?.mediaStream;
+        return stream == null ? [] : [{ key: call.streamId, stream }];
+      }),
+    );
+
+    this.ui.call.show({
+      ready,
+      supported: this.canCall,
+      joined: this.call != null,
+      joining: this.joiningCall,
+      muted: this.call?.muted ?? false,
+      members: ready ? calls.map((call) => ({ name: this.nameOf(call.participantId), muted: call.muted })) : [],
+    });
+  }
+
+  /**
+   * Whether this page plays the call: someone else is in it
+   */
+  private hearsCall(): boolean {
+    return this.state?.calls.some((call) => call.participantId !== this.selfId) ?? false;
+  }
+
+  /**
+   * Whether a capture would send the call back to the room: its sound may contain this page's sound, which plays the
+   * call. The echo canceller of the microphone does not help, because the capture copies the sound digitally.
+   */
+  private echoConflict(stream: MediaStream): boolean {
+    return capturesOwnAudio(stream) && this.hearsCall();
+  }
+
+  private echoChoiceFor(stream: MediaStream): EchoChoice | null {
+    return this.echoChoice?.stream === stream ? this.echoChoice.choice : null;
+  }
+
+  /**
+   * The sound of a capture is not sent while it would carry the call back, unless the person chose to share it
+   */
+  private screenAudioSuppressed(stream: MediaStream): boolean {
+    return this.echoConflict(stream) && this.echoChoiceFor(stream) !== "screen";
+  }
+
+  /**
+   * Mutes the other presenters on this page while the own capture may contain this page's sound. With the call, the
+   * shared sound is off until the person chooses between it and hearing the call.
    */
   private updateEchoProtection(tiles: TileView[]): void {
-    const needed = this.outgoing != null && capturesOwnAudio(this.outgoing.mediaStream);
+    const outgoing = this.outgoing;
+    const needed = outgoing != null && capturesOwnAudio(outgoing.mediaStream);
     this.ui.stage.setEchoMuted(needed);
 
     if (!needed) {
@@ -863,5 +1086,12 @@ export class RoomController {
       this.echoNoticeShown = true;
       this.ui.notices.showNotice("notice-echo-muted");
     }
+
+    outgoing?.refreshTrackStates();
+
+    const conflict = outgoing != null && this.echoConflict(outgoing.mediaStream);
+    const choice = outgoing == null ? null : this.echoChoiceFor(outgoing.mediaStream);
+    this.ui.call.showEchoChoice(conflict && choice == null);
+    this.ui.callAudio.setMuted(conflict && choice === "screen");
   }
 }

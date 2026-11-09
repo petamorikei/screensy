@@ -40,6 +40,8 @@ export type NoticeId =
   | "notice-switch-failed"
   | "notice-blur-failed"
   | "notice-full"
-  | "notice-echo-muted";
+  | "notice-echo-muted"
+  | "notice-microphone-denied"
+  | "notice-call-audio-blocked";
 
 export type DialogMode = "start" | "resume";

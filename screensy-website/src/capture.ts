@@ -41,23 +41,22 @@ export interface Capture {
 }
 
 /**
+ * The caller sets the state of the tracks (setTrackStates) before they reach any sender, so that a hidden
+ * presentation never leaks a frame.
+ *
  * @param blurStrength The strength of the blur, or null to send the capture sharp
  */
-export const prepareCapture = (stream: MediaStream, hidden: boolean, blurStrength: number | null): Capture => {
+export const prepareCapture = (stream: MediaStream, blurStrength: number | null): Capture => {
   const video = stream.getVideoTracks()[0] ?? null;
   const blur = blurStrength != null && video != null ? new BlurProcessor(video, blurStrength) : null;
-  const capture: Capture = {
+
+  return {
     stream,
     video,
     audio: stream.getAudioTracks()[0] ?? null,
     blur,
     preview: blur == null ? stream : new MediaStream([blur.track]),
   };
-
-  // Before the tracks reach any sender, so that a hidden presentation never leaks a frame
-  setCaptureHidden(capture, hidden);
-
-  return capture;
 };
 
 /**
@@ -69,13 +68,17 @@ export const sentVideo = (capture: Capture): MediaStreamTrack | null => {
 
 /**
  * Hiding disables every track, including the input of the blur, so that turning the blur on or off while hidden
- * never shows the screen.
+ * never shows the screen. A suppressed audio track is disabled too, so that it sends silence.
  */
-export const setCaptureHidden = (capture: Capture, hidden: boolean): void => {
-  for (const track of [capture.video, capture.blur?.track, capture.audio]) {
+export const setTrackStates = (capture: Capture, hidden: boolean, audioSuppressed: boolean): void => {
+  for (const track of [capture.video, capture.blur?.track]) {
     if (track != null) {
       track.enabled = !hidden;
     }
+  }
+
+  if (capture.audio != null) {
+    capture.audio.enabled = !hidden && !audioSuppressed;
   }
 };
 

@@ -1,4 +1,6 @@
 import { getElement } from "../dom.ts";
+import { CallAudio } from "./call-audio.ts";
+import { CallPanel } from "./call-panel.ts";
 import { ChatPanel } from "./chat-panel.ts";
 import { PresentDialog } from "./dialog.ts";
 import { Menu } from "./menu.ts";
@@ -16,6 +18,8 @@ export class Ui {
   readonly dialog: PresentDialog;
   readonly notices: Notices;
   readonly chat: ChatPanel;
+  readonly call: CallPanel;
+  readonly callAudio: CallAudio;
 
   private readonly anonymousName: string;
 
@@ -27,6 +31,8 @@ export class Ui {
     this.dialog = new PresentDialog();
     this.notices = new Notices();
     this.chat = new ChatPanel();
+    this.call = new CallPanel();
+    this.callAudio = new CallAudio();
   }
 
   /**

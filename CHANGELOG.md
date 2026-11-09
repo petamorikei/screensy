@@ -56,6 +56,12 @@ The format is based on [Keep a Changelog], and this project adheres to
     every page shows the messages in the same order. The history survives a
     reload, and is gone when everyone has left the room. The panel shows how
     many of the others the chat reaches.
+-   A voice call: "Join call" asks for the microphone, and everyone in the
+    room hears the people in the call, directly from their browsers. A bar
+    lists who is in the call and who is muted. After a lost connection to the
+    server, the page joins the call again by itself. When a presenter shares
+    sound that would carry the call back to everyone, the shared sound stays
+    off until they choose between it and hearing the call.
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.

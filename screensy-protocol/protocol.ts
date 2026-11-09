@@ -81,8 +81,29 @@ const StreamStateSchema = z.object({
 });
 
 /**
- * Sends a WebRTC message to another participant through the server. Either the sender or the recipient must be the
- * presenter of the stream.
+ * Joins the voice call. Every participant in the call sends a stream of their microphone to everyone in the room,
+ * including those who are not in the call. A participant already in the call joins again with a new stream.
+ */
+const JoinCallSchema = z.object({
+  type: z.literal("joincall"),
+  muted: z.boolean(),
+});
+
+const LeaveCallSchema = z.object({
+  type: z.literal("leavecall"),
+});
+
+/**
+ * Whether the sender's microphone is muted. Ignored if the sender is not in the call.
+ */
+const CallStateToServerSchema = z.object({
+  type: z.literal("callstate"),
+  muted: z.boolean(),
+});
+
+/**
+ * Sends a WebRTC message to another participant through the server. Either the sender or the recipient must own the
+ * stream: its presenter, or the participant in the call who sends it.
  */
 const signalToServer = { type: z.literal("signal"), to: z.string(), toConnection: z.string(), streamId: z.string() };
 const SignalToServerSchema = z.discriminatedUnion("kind", [
@@ -111,6 +132,9 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   PresentSchema,
   StopPresentingSchema,
   StreamStateSchema,
+  JoinCallSchema,
+  LeaveCallSchema,
+  CallStateToServerSchema,
   SignalToServerSchema,
   MeshSignalToServerSchema,
 ]);
@@ -173,10 +197,23 @@ const PresenterStateSchema = z.object({
   graceRemainingMs: z.number().nonnegative().nullable(),
 });
 
+/**
+ * A participant in the voice call and the stream of their microphone
+ */
+const CallStateSchema = z.object({
+  participantId: z.string(),
+  streamId: z.string(),
+  muted: z.boolean(),
+});
+
 const RoomStateSchema = z.object({
   type: z.literal("roomstate"),
   participants: z.array(ParticipantStateSchema),
   presenters: z.array(PresenterStateSchema),
+  /**
+   * The participants in the voice call, in the order of joining
+   */
+  calls: z.array(CallStateSchema),
 });
 
 /**
@@ -254,6 +291,7 @@ export type MessageWelcome = z.infer<typeof WelcomeSchema>;
 export type ParticipantState = z.infer<typeof ParticipantStateSchema>;
 export type DisconnectReason = z.infer<typeof DisconnectReasonSchema>;
 export type PresenterState = z.infer<typeof PresenterStateSchema>;
+export type CallState = z.infer<typeof CallStateSchema>;
 export type MessageRoomState = z.infer<typeof RoomStateSchema>;
 export type MessageSignalFromServer = z.infer<typeof SignalFromServerSchema>;
 export type MessageMeshSignalFromServer = z.infer<typeof MeshSignalFromServerSchema>;

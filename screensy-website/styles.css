@@ -594,6 +594,57 @@ button[type="submit"]:hover {
   font: inherit;
 }
 
+.call-bar {
+  position: fixed;
+  bottom: 10px;
+  left: 10px;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: white;
+  background-color: rgba(34, 34, 34, 0.9);
+}
+
+.call-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.call-member {
+  padding: 1px 8px;
+  border-radius: 999px;
+  overflow-wrap: anywhere;
+  background-color: #444444;
+}
+
+.call-member[data-muted] {
+  color: #b0b0b0;
+}
+
+.call-muted {
+  margin-left: 4px;
+}
+
+.echo-choice {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.echo-choice-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 @media screen and (min-width: 800px) {
   .popup h1 {
     text-align: center;
