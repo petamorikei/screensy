@@ -1,3 +1,5 @@
+import type { TileKind } from "./types.ts";
+
 export interface Tile {
   root: HTMLElement;
   video: HTMLVideoElement;
@@ -5,4 +7,5 @@ export interface Tile {
   status: HTMLElement;
   mute: HTMLButtonElement;
   self: boolean;
+  kind: TileKind;
 }

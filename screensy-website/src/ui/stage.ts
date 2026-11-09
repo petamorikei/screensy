@@ -1,6 +1,7 @@
+import { applySpeaker } from "../devices.ts";
 import { getElement, setNameSlots } from "../dom.ts";
 import type { Tile } from "./tile.ts";
-import type { TileView } from "./types.ts";
+import type { TileKind, TileView } from "./types.ts";
 
 /**
  * The presentations side by side (#stage), one tile per presenter, copied from #tile-template. Also decides which
@@ -35,6 +36,11 @@ export class Stage {
    * This presenter's capture may contain this page's sound, so the other presenters are muted
    */
   private echoMuted = false;
+
+  /**
+   * The speaker chosen in the menu, or "" for the default
+   */
+  private speakerId = "";
 
   private readonly selfTileText: string;
   private readonly muteText: string;
@@ -81,9 +87,9 @@ export class Stage {
     const roots = views.map((view) => {
       let tile = this.tiles.get(view.key);
 
-      if (tile == null || tile.self !== view.self) {
+      if (tile == null || tile.self !== view.self || tile.kind !== view.kind) {
         tile?.root.remove();
-        tile = this.createTile(view.key, view.self);
+        tile = this.createTile(view.key, view.self, view.kind);
         this.tiles.set(view.key, tile);
       }
 
@@ -94,6 +100,7 @@ export class Stage {
       }
 
       this.showTileStatus(tile, view);
+      tile.root.toggleAttribute("data-speaking", view.speaking);
       return tile.root;
     });
 
@@ -105,8 +112,21 @@ export class Stage {
     }
 
     this.stage.dataset.count = roots.length.toString();
+    this.stage.classList.toggle("many", roots.length > 4);
+    this.stage.style.setProperty("--columns", Math.ceil(Math.sqrt(roots.length)).toString());
     this.updateLayout();
     this.refreshAudio();
+  }
+
+  /**
+   * Plays every tile on the chosen speaker
+   */
+  setSpeaker(deviceId: string): void {
+    this.speakerId = deviceId;
+
+    for (const tile of this.tiles.values()) {
+      void applySpeaker(tile.video, deviceId);
+    }
   }
 
   /**
@@ -119,7 +139,7 @@ export class Stage {
     }
   }
 
-  private createTile(key: string, self: boolean): Tile {
+  private createTile(key: string, self: boolean, kind: TileKind): Tile {
     const fragment = this.tileTemplate.content.cloneNode(true) as DocumentFragment;
     const find = <T extends Element>(selector: string, type: { new (): T; prototype: T }): T => {
       const element = fragment.querySelector(selector);
@@ -138,13 +158,16 @@ export class Stage {
       status: find(".tile-status", HTMLElement),
       mute: find(".tile-mute", HTMLButtonElement),
       self,
+      kind,
     };
 
     tile.root.dataset.key = key;
     tile.root.toggleAttribute("data-self", self);
+    tile.root.dataset.kind = kind;
     tile.video.muted = true;
-    // Never play back the presenter's own sound
-    tile.mute.classList.toggle("hidden", self);
+    // Never play back the presenter's own sound. The sound of a camera plays with the call.
+    tile.mute.classList.toggle("hidden", self || kind === "camera");
+    void applySpeaker(tile.video, this.speakerId);
 
     // Playback stops when the tile moves, or when the browser refuses the sound
     tile.video.addEventListener("pause", () => this.play(tile));
@@ -212,7 +235,7 @@ export class Stage {
 
   private refreshAudio(): void {
     for (const [key, tile] of this.tiles) {
-      const muted = tile.self || this.isMuted(key);
+      const muted = tile.self || tile.kind === "camera" || this.isMuted(key);
       tile.video.muted = muted;
       tile.mute.textContent = muted ? "🔇" : "🔊";
       tile.mute.setAttribute("aria-label", muted ? this.unmuteText : this.muteText);

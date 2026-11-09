@@ -111,6 +111,9 @@
             <button id="call-mute-button" class="hidden" type="button" aria-pressed="false">
                 Mute microphone
             </button>
+            <button id="call-camera-button" class="hidden" type="button" aria-pressed="false">
+                Turn camera on
+            </button>
             <button id="call-leave-button" class="hidden" type="button">
                 Leave call
             </button>
@@ -149,6 +152,16 @@
             <section id="menu-participants" class="menu-section">
                 <h2>Participants (<span class="count-slot">0</span>)</h2>
                 <ul id="participant-list" class="participant-list"></ul>
+            </section>
+            <section id="menu-devices" class="menu-section">
+                <h2>Call devices</h2>
+                <label for="device-microphone">Microphone</label>
+                <select id="device-microphone"></select>
+                <label for="device-camera">Camera</label>
+                <select id="device-camera"></select>
+                <label id="device-speaker-label" for="device-speaker">Speaker</label>
+                <select id="device-speaker"></select>
+                <p class="menu-note">The names show after the browser has given access to a device of their kind.</p>
             </section>
             <section id="menu-stats" class="menu-section">
                 <h2>Connection</h2>
@@ -270,6 +283,24 @@
                     ×
                 </button>
             </div>
+            <div id="notice-camera-denied" class="notice hidden" role="status">
+                <p>
+                    Could not access your camera. If your browser did not ask
+                    for access, check its settings.
+                </p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
+            <div id="notice-cameras-full" class="notice hidden" role="status">
+                <p>
+                    Your camera stays off: the room has reached the limit of
+                    cameras.
+                </p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
             <div id="notice-call-audio-blocked" class="notice hidden" role="status">
                 <p>Click anywhere on the page to hear the call.</p>
                 <button class="notice-close" type="button" aria-label="Close">
@@ -336,10 +367,22 @@
         <span id="text-unmute" class="hidden">Unmute</span>
         <span id="text-chat-reach" class="hidden">Reaches {open} of {total} people</span>
         <span id="text-chat-alone" class="hidden">Nobody else is here yet</span>
+        <span id="text-file-download" class="hidden">Download</span>
+        <span id="text-file-cancel" class="hidden">Cancel</span>
+        <span id="text-file-save" class="hidden">Save</span>
+        <span id="text-file-retry" class="hidden">Try again</span>
+        <span id="text-file-unreachable" class="hidden">The sender is not here</span>
+        <span id="text-file-receiving" class="hidden">{percent}%</span>
         <span id="text-in-call" class="hidden">in call</span>
         <span id="text-call-muted" class="hidden">muted</span>
         <span id="text-mute-microphone" class="hidden">Mute microphone</span>
         <span id="text-unmute-microphone" class="hidden">Unmute microphone</span>
+        <span id="text-camera-on" class="hidden">Turn camera on</span>
+        <span id="text-camera-off" class="hidden">Turn camera off</span>
+        <span id="text-call-camera" class="hidden">camera on</span>
+        <span id="text-stats-call" class="hidden">{name} (call)</span>
+        <span id="text-device-default" class="hidden">Default</span>
+        <span id="text-device-numbered" class="hidden">{kind} {number}</span>
         <template id="tile-template">
             <div class="tile">
                 <video autoplay muted playsinline></video>
@@ -440,6 +483,8 @@
                     placeholder="Message (Shift+Enter for a new line)"
                     aria-label="Message"
                 ></textarea>
+                <button id="chat-attach" type="button" aria-label="Attach files">📎</button>
+                <input id="chat-file" class="hidden" type="file" multiple />
                 <button id="chat-send" type="submit">Send</button>
             </form>
         </aside>

@@ -1,4 +1,4 @@
-import type { MessageRoomState, PresenterState } from "screensy-protocol";
+import type { CallState, MessageRoomState, PresenterState } from "screensy-protocol";
 import { formatCountdown } from "./format.ts";
 import type { TileView } from "./ui/types.ts";
 
@@ -12,7 +12,7 @@ export interface TileContext {
    */
   outgoing: { previewStream: MediaStream; hidden: boolean } | null;
   /**
-   * The received stream of a presentation, or null before its first track
+   * The received stream of a presentation or of a call, or null before its first track
    */
   incomingStream: (streamId: string) => MediaStream | null;
   nameOf: (participantId: string) => string;
@@ -20,25 +20,37 @@ export interface TileContext {
    * When the grace period of a reconnecting presenter ends, in performance.now() time
    */
   graceDeadline: (participantId: string) => number | undefined;
+  /**
+   * The own camera, once the room has accepted it, or null
+   */
+  ownCamera: MediaStream | null;
+  /**
+   * Whether a participant in the call speaks
+   */
+  speaking: (participantId: string) => boolean;
 }
 
 export const ownTile = (context: TileContext): TileView => ({
   key: context.selfId ?? "self",
+  kind: "screen",
   name: "",
   self: true,
   stream: context.outgoing?.previewStream ?? null,
   status: context.outgoing?.hidden ? "status-self-hidden" : null,
   countdown: null,
+  speaking: false,
 });
 
 const remoteTile = (context: TileContext, state: MessageRoomState, presenter: PresenterState): TileView => {
   const tile: TileView = {
     key: presenter.participantId,
+    kind: "screen",
     name: context.nameOf(presenter.participantId),
     self: false,
     stream: null,
     status: null,
     countdown: null,
+    speaking: false,
   };
 
   if (presenter.status === "reconnecting") {
@@ -96,3 +108,33 @@ export const tileViews = (context: TileContext, state: MessageRoomState): TileVi
 
   return tiles;
 };
+
+const cameraTile = (context: TileContext, call: CallState): TileView | null => {
+  const self = call.participantId === context.selfId;
+  const stream = self ? context.ownCamera : context.incomingStream(call.streamId);
+
+  // The own camera shows once the page sends it
+  if (self && stream == null) {
+    return null;
+  }
+
+  return {
+    key: `camera:${call.participantId}`,
+    kind: "camera",
+    name: self ? "" : context.nameOf(call.participantId),
+    self,
+    stream,
+    status: stream == null ? "status-joining" : null,
+    countdown: null,
+    speaking: context.speaking(call.participantId),
+  };
+};
+
+/**
+ * One tile per camera that is on, in the order of the call, after the presentations
+ */
+export const cameraTileViews = (context: TileContext, state: MessageRoomState): TileView[] =>
+  state.calls.flatMap((call) => {
+    const tile = call.camera ? cameraTile(context, call) : null;
+    return tile == null ? [] : [tile];
+  });

@@ -24,24 +24,45 @@ const MAX_NAME_LENGTH = 64;
 const SeqSchema = z.int().nonnegative();
 
 /**
+ * The longest file name and media type that a message announces
+ */
+const MAX_FILE_NAME_LENGTH = 255;
+
+/**
+ * A file that the author shares: the others ask the author's page for it on the files channel
+ */
+const ChatFileSchema = z.object({
+  id: z.string().min(1).max(MAX_ID_LENGTH),
+  name: z.string().min(1).max(MAX_FILE_NAME_LENGTH),
+  size: z.int().nonnegative(),
+  type: z.string().max(MAX_FILE_NAME_LENGTH),
+});
+
+/**
  * A message is identified by its author, a random ID that the page creates whenever it loads, and the number of the
  * message from that author, counted from 0. Their Lamport time orders the messages the same on every page.
  */
-export const ChatMessageSchema = z.object({
-  authorId: z.string().min(1).max(MAX_ID_LENGTH),
-  seq: SeqSchema,
-  lamport: z.int().positive(),
-  /**
-   * The author's participant ID and name when they sent it, for the display
-   */
-  participantId: z.string().max(MAX_ID_LENGTH),
-  name: z.string().max(MAX_NAME_LENGTH),
-  text: z.string().min(1).max(MAX_CHAT_TEXT_LENGTH),
-  /**
-   * The time on the author's clock, in milliseconds since the epoch. Only for the display, because clocks differ.
-   */
-  sentAt: z.number(),
-});
+export const ChatMessageSchema = z
+  .object({
+    authorId: z.string().min(1).max(MAX_ID_LENGTH),
+    seq: SeqSchema,
+    lamport: z.int().positive(),
+    /**
+     * The author's participant ID and name when they sent it, for the display
+     */
+    participantId: z.string().max(MAX_ID_LENGTH),
+    name: z.string().max(MAX_NAME_LENGTH),
+    /**
+     * Empty only beside a file
+     */
+    text: z.string().max(MAX_CHAT_TEXT_LENGTH),
+    /**
+     * The time on the author's clock, in milliseconds since the epoch. Only for the display, because clocks differ.
+     */
+    sentAt: z.number(),
+    file: ChatFileSchema.optional(),
+  })
+  .refine((message) => message.text !== "" || message.file != null);
 
 /**
  * Inclusive ranges of sequence numbers
@@ -97,5 +118,6 @@ export const ChatStorageSchema = z.object({
 });
 
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
+export type ChatFile = z.infer<typeof ChatFileSchema>;
 export type ChatRanges = z.infer<typeof RangesSchema>;
 export type ChatWire = z.infer<typeof ChatWireSchema>;

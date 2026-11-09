@@ -107,6 +107,9 @@
             <button id="call-mute-button" class="hidden" type="button" aria-pressed="false">
                 マイクをミュート
             </button>
+            <button id="call-camera-button" class="hidden" type="button" aria-pressed="false">
+                カメラをオン
+            </button>
             <button id="call-leave-button" class="hidden" type="button">
                 通話から抜ける
             </button>
@@ -145,6 +148,16 @@
             <section id="menu-participants" class="menu-section">
                 <h2>参加者（<span class="count-slot">0</span>）</h2>
                 <ul id="participant-list" class="participant-list"></ul>
+            </section>
+            <section id="menu-devices" class="menu-section">
+                <h2>通話の機器</h2>
+                <label for="device-microphone">マイク</label>
+                <select id="device-microphone"></select>
+                <label for="device-camera">カメラ</label>
+                <select id="device-camera"></select>
+                <label id="device-speaker-label" for="device-speaker">スピーカー</label>
+                <select id="device-speaker"></select>
+                <p class="menu-note">機器の名前は、その種類の機器へのアクセスをブラウザが許可したあとに表示されます。</p>
             </section>
             <section id="menu-stats" class="menu-section">
                 <h2>接続</h2>
@@ -258,6 +271,20 @@
                     ×
                 </button>
             </div>
+            <div id="notice-camera-denied" class="notice hidden" role="status">
+                <p>
+                    カメラにアクセスできませんでした。ブラウザがアクセスを求めてこない場合は、ブラウザの設定を見直して下さい。
+                </p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
+            <div id="notice-cameras-full" class="notice hidden" role="status">
+                <p>カメラを使える人数の上限に達しているため、カメラはオフのままです。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
             <div id="notice-call-audio-blocked" class="notice hidden" role="status">
                 <p>ページのどこかをクリックすると、通話が聞こえます。</p>
                 <button class="notice-close" type="button" aria-label="閉じる">
@@ -321,10 +348,22 @@
         <span id="text-unmute" class="hidden">消音を解除</span>
         <span id="text-chat-reach" class="hidden">{total}人中{open}人に届きます</span>
         <span id="text-chat-alone" class="hidden">まだ誰もいません</span>
+        <span id="text-file-download" class="hidden">取得</span>
+        <span id="text-file-cancel" class="hidden">中止</span>
+        <span id="text-file-save" class="hidden">保存</span>
+        <span id="text-file-retry" class="hidden">もう一度</span>
+        <span id="text-file-unreachable" class="hidden">送信者がいません</span>
+        <span id="text-file-receiving" class="hidden">{percent}%</span>
         <span id="text-in-call" class="hidden">通話中</span>
         <span id="text-call-muted" class="hidden">ミュート中</span>
         <span id="text-mute-microphone" class="hidden">マイクをミュート</span>
         <span id="text-unmute-microphone" class="hidden">ミュートを解除</span>
+        <span id="text-camera-on" class="hidden">カメラをオン</span>
+        <span id="text-camera-off" class="hidden">カメラをオフ</span>
+        <span id="text-call-camera" class="hidden">カメラオン</span>
+        <span id="text-stats-call" class="hidden">{name}（通話）</span>
+        <span id="text-device-default" class="hidden">既定</span>
+        <span id="text-device-numbered" class="hidden">{kind}{number}</span>
         <template id="tile-template">
             <div class="tile">
                 <video autoplay muted playsinline></video>
@@ -423,6 +462,8 @@
                     placeholder="メッセージ（Shift+Enterで改行）"
                     aria-label="メッセージ"
                 ></textarea>
+                <button id="chat-attach" type="button" aria-label="ファイルを添付">📎</button>
+                <input id="chat-file" class="hidden" type="file" multiple />
                 <button id="chat-send" type="submit">送信</button>
             </form>
         </aside>

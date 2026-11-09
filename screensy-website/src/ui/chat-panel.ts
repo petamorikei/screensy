@@ -1,6 +1,25 @@
 import { getElement } from "../dom.ts";
 
 /**
+ * A file of a message as the chat panel shows it: what this page can do with it
+ */
+export interface ChatFileView {
+  id: string;
+  name: string;
+  /**
+   * The size, formatted
+   */
+  size: string;
+  /**
+   * "own": this page shared it. "unreachable": its sender is not connected. "receiving" has the progress, from 0 to 1,
+   * and "done" the URL to save it from.
+   */
+  status: "own" | "unreachable" | "idle" | "receiving" | "done" | "failed";
+  progress: number;
+  url: string | null;
+}
+
+/**
  * A message as the chat panel shows it
  */
 export interface ChatEntryView {
@@ -9,8 +28,12 @@ export interface ChatEntryView {
    * The time on the author's clock, in milliseconds since the epoch
    */
   sentAt: number;
+  /**
+   * Empty for a file without a text
+   */
   text: string;
   self: boolean;
+  file: ChatFileView | null;
 }
 
 /**
@@ -27,6 +50,12 @@ export class ChatPanel {
    * Sends the trimmed text. Returns whether it was sent, which clears the input.
    */
   public onsend: ((text: string) => boolean) | null = null;
+  /**
+   * Shares a file chosen with the attach button. Returns whether it was sent.
+   */
+  public onattach: ((file: File) => boolean) | null = null;
+  public ondownload: ((fileId: string) => void) | null = null;
+  public oncanceldownload: ((fileId: string) => void) | null = null;
 
   private readonly button: HTMLButtonElement;
   private readonly unread: HTMLElement;
@@ -38,6 +67,9 @@ export class ChatPanel {
   private readonly reachText: string;
   private readonly aloneText: string;
   private readonly timeFormat: Intl.DateTimeFormat;
+  private readonly attachButton: HTMLButtonElement;
+  private readonly fileInput: HTMLInputElement;
+  private readonly fileTexts: Record<"download" | "cancel" | "save" | "retry" | "unreachable" | "receiving", string>;
   private unreadCount = 0;
 
   constructor() {
@@ -53,6 +85,27 @@ export class ChatPanel {
     this.timeFormat = new Intl.DateTimeFormat(document.documentElement.lang || undefined, {
       hour: "2-digit",
       minute: "2-digit",
+    });
+
+    this.attachButton = getElement("chat-attach", HTMLButtonElement);
+    this.fileInput = getElement("chat-file", HTMLInputElement);
+    const text = (id: string) => getElement(id, HTMLElement).textContent.trim();
+    this.fileTexts = {
+      download: text("text-file-download"),
+      cancel: text("text-file-cancel"),
+      save: text("text-file-save"),
+      retry: text("text-file-retry"),
+      unreachable: text("text-file-unreachable"),
+      receiving: text("text-file-receiving"),
+    };
+
+    this.attachButton.addEventListener("click", () => this.fileInput.click());
+    this.fileInput.addEventListener("change", () => {
+      for (const file of this.fileInput.files ?? []) {
+        this.onattach?.(file);
+      }
+
+      this.fileInput.value = "";
     });
 
     this.button.addEventListener("click", () => this.setOpen(!this.isOpen));
@@ -107,11 +160,19 @@ export class ChatPanel {
 
       meta.append(name, time);
 
-      const text = document.createElement("p");
-      text.className = "chat-text";
-      text.textContent = entry.text;
+      item.append(meta);
 
-      item.append(meta, text);
+      if (entry.file != null) {
+        item.append(this.fileRow(entry.file));
+      }
+
+      if (entry.text !== "") {
+        const text = document.createElement("p");
+        text.className = "chat-text";
+        text.textContent = entry.text;
+        item.append(text);
+      }
+
       return item;
     });
 
@@ -149,6 +210,65 @@ export class ChatPanel {
   setEnabled(enabled: boolean): void {
     this.input.disabled = !enabled;
     this.sendButton.disabled = !enabled;
+    this.attachButton.disabled = !enabled;
+  }
+
+  /**
+   * The name and size of a file, and what to do with it. The name comes from someone else: text only.
+   */
+  private fileRow(file: ChatFileView): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "chat-file";
+    row.dataset.fileId = file.id;
+    row.dataset.status = file.status;
+
+    const label = document.createElement("span");
+    label.className = "chat-file-name";
+    label.textContent = `📎 ${file.name} (${file.size})`;
+    row.append(label);
+
+    const button = (text: string, onclick: () => void) => {
+      const element = document.createElement("button");
+      element.type = "button";
+      element.textContent = text;
+      element.addEventListener("click", onclick);
+      row.append(element);
+    };
+
+    const note = (text: string) => {
+      const element = document.createElement("span");
+      element.className = "chat-file-note";
+      element.textContent = text;
+      row.append(element);
+    };
+
+    switch (file.status) {
+      case "own":
+        break;
+      case "unreachable":
+        note(this.fileTexts.unreachable);
+        break;
+      case "idle":
+        button(this.fileTexts.download, () => this.ondownload?.(file.id));
+        break;
+      case "failed":
+        button(this.fileTexts.retry, () => this.ondownload?.(file.id));
+        break;
+      case "receiving":
+        note(this.fileTexts.receiving.replace("{percent}", Math.floor(file.progress * 100).toString()));
+        button(this.fileTexts.cancel, () => this.oncanceldownload?.(file.id));
+        break;
+      case "done": {
+        const link = document.createElement("a");
+        link.href = file.url ?? "";
+        link.download = file.name;
+        link.textContent = this.fileTexts.save;
+        row.append(link);
+        break;
+      }
+    }
+
+    return row;
   }
 
   private setOpen(open: boolean): void {

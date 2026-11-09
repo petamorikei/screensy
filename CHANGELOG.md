@@ -62,6 +62,15 @@ The format is based on [Keep a Changelog], and this project adheres to
     server, the page joins the call again by itself. When a presenter shares
     sound that would carry the call back to everyone, the shared sound stays
     off until they choose between it and hearing the call.
+-   Video in the call: "Turn camera on" shows the camera to everyone in the
+    room, beside the shared screens. Up to four cameras can be on at once
+    (`SCREENSY_MAX_CAMERAS`).
+-   The menu lets you choose the microphone, the camera and the speaker of
+    the call; a new choice applies during the call. The call marks who is
+    speaking, and the connection statistics list its connections.
+-   Files in the chat: the attach button shares files of any size. The
+    others download a file directly from the sender's browser, as long as
+    the sender's page stays open.
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.

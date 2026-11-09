@@ -17,19 +17,29 @@ export type TileStatusId =
   | "status-self-hidden";
 
 /**
- * One presentation on the stage
+ * A presentation, or the camera of a participant in the call
+ */
+export type TileKind = "screen" | "camera";
+
+/**
+ * One tile on the stage: a presentation, or a camera
  */
 export interface TileView {
   /**
-   * The presenter's participant ID, so that the tile, its sound setting and its enlargement stay the same when the
-   * presenter starts a new stream
+   * The presenter's participant ID, or "camera:" and the participant ID, so that the tile, its sound setting and its
+   * enlargement stay the same when the participant starts a new stream
    */
   key: string;
+  kind: TileKind;
   name: string;
   self: boolean;
   stream: MediaStream | null;
   status: TileStatusId | null;
   countdown: string | null;
+  /**
+   * The participant speaks in the call: only for cameras
+   */
+  speaking: boolean;
 }
 
 export type NoticeId =
@@ -42,6 +52,8 @@ export type NoticeId =
   | "notice-full"
   | "notice-echo-muted"
   | "notice-microphone-denied"
-  | "notice-call-audio-blocked";
+  | "notice-call-audio-blocked"
+  | "notice-camera-denied"
+  | "notice-cameras-full";
 
 export type DialogMode = "start" | "resume";

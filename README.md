@@ -7,7 +7,7 @@
 Screensy is a simple screen sharing solution. Nothing more, nothing less.
 
 This repository is a fork of [screensy/screensy](https://github.com/screensy/screensy).
-It adds several presenters at once, a chat, a voice call, reconnection, quality settings and
+It adds several presenters at once, a chat with files, a video call, reconnection, quality settings and
 Cloudflare Workers, among other things; see [CHANGELOG.md](CHANGELOG.md). The
 setup below is for this fork.
 
@@ -15,7 +15,7 @@ It consists of two parts, the rendezvous part which runs on the server, and the
 website part which runs in the user's browser. The rendezvous server is only
 used for protocol negotiation and discovery of the participants. The video
 stream is directly sent from the browser of each presenter to the browser of
-each viewer, and the chat messages and the call go directly between the browsers too.
+each viewer, and the chat messages, the files and the call go directly between the browsers too.
 All traffic (between rendezvous and browser and between browsers) is encrypted
 by default.
 
@@ -395,6 +395,7 @@ of "wrangler.jsonc" on Cloudflare):
 | ------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `SCREENSY_STUN_URLS`      | `stun:stun.cloudflare.com:3478` | STUN servers, comma-separated. `{host}` stands for the host name of the page. Set it to nothing to use no STUN server. |
 | `SCREENSY_MAX_PRESENTERS` | `4`                             | The number of people that can present at the same time.                                                                |
+| `SCREENSY_MAX_CAMERAS`    | `4`                             | The number of cameras that can be on at the same time in the call.                                                     |
 
 To use a STUN server of your own instead, for example Coturn with `stun-only`
 on the machine that runs screensy, set `SCREENSY_STUN_URLS=stun:{host}`. Run it
@@ -425,7 +426,10 @@ reach.
 The video goes from each presenter to each viewer directly. Each presenter
 uploads one stream per participant, and each participant downloads one stream
 per presenter: with four presenters, a viewer receives four streams. Lower the
-bitrate or the resolution in the menu when the connections are slow.
+bitrate or the resolution in the menu when the connections are slow. The call
+works the same way: each participant in the call sends their microphone, and
+their camera while it is on, to everyone in the room. A file goes from its
+sender to each person who downloads it.
 
 ## Ports
 

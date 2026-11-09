@@ -2,6 +2,7 @@ import { getElement } from "../dom.ts";
 import { CallAudio } from "./call-audio.ts";
 import { CallPanel } from "./call-panel.ts";
 import { ChatPanel } from "./chat-panel.ts";
+import { DeviceSection } from "./device-section.ts";
 import { PresentDialog } from "./dialog.ts";
 import { Menu } from "./menu.ts";
 import { Notices } from "./notices.ts";
@@ -20,11 +21,14 @@ export class Ui {
   readonly chat: ChatPanel;
   readonly call: CallPanel;
   readonly callAudio: CallAudio;
+  readonly devices: DeviceSection;
 
   private readonly anonymousName: string;
+  private readonly callStatsText: string;
 
   constructor() {
     this.anonymousName = getElement("text-anonymous", HTMLElement).textContent.trim();
+    this.callStatsText = getElement("text-stats-call", HTMLElement).textContent.trim();
     this.stage = new Stage();
     this.toolbar = new Toolbar();
     this.menu = new Menu((name, participantId) => this.displayName(name, participantId));
@@ -33,6 +37,14 @@ export class Ui {
     this.chat = new ChatPanel();
     this.call = new CallPanel();
     this.callAudio = new CallAudio();
+    this.devices = new DeviceSection();
+  }
+
+  /**
+   * The name of a connection of the call in the statistics
+   */
+  callStatsName(name: string): string {
+    return this.callStatsText.replace("{name}", name);
   }
 
   /**

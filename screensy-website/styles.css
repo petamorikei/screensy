@@ -146,6 +146,26 @@ button[type="submit"]:hover {
   object-fit: contain;
 }
 
+/* More than four tiles, with the cameras: as many columns as rows, or one more */
+.stage.many {
+  grid-template: none / repeat(var(--columns), 1fr);
+  grid-auto-rows: 1fr;
+}
+
+.tile[data-kind="camera"] video {
+  object-fit: cover;
+}
+
+/* The own camera shows like a mirror, as people expect to see themselves */
+.tile[data-kind="camera"][data-self] video {
+  transform: scaleX(-1);
+}
+
+.tile[data-speaking] {
+  outline: 3px solid #4caf50;
+  outline-offset: -3px;
+}
+
 /* One enlarged presentation, and the others in a column on the right */
 .stage.spotlight {
   grid-template: repeat(var(--others), 1fr) / 1fr minmax(160px, 22%);
@@ -594,6 +614,27 @@ button[type="submit"]:hover {
   font: inherit;
 }
 
+.chat-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.chat-file-name {
+  overflow-wrap: anywhere;
+}
+
+.chat-file-note {
+  color: #b0b0b0;
+  font-size: 0.9em;
+}
+
+.chat-file a {
+  color: #8ab4f8;
+}
+
 .call-bar {
   position: fixed;
   bottom: 10px;
@@ -630,8 +671,12 @@ button[type="submit"]:hover {
   color: #b0b0b0;
 }
 
-.call-muted {
+.call-mark {
   margin-left: 4px;
+}
+
+.call-member[data-speaking] {
+  box-shadow: 0 0 0 2px #4caf50;
 }
 
 .echo-choice {

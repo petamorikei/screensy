@@ -53,6 +53,11 @@ export interface RoomConfig {
    */
   readonly maxPresenters: number;
   /**
+   * The number of cameras that can be on at the same time, in the call. Independent of the presenters: a camera is
+   * lighter than a screen, and needs no seat to keep, because the page can open it again without a click.
+   */
+  readonly maxCameras: number;
+  /**
    * The STUN servers that clients use. "{host}" stands for the host name that the client connected to, like
    * location.hostname on the page, for a STUN server on the machine that runs screensy.
    */
@@ -114,6 +119,7 @@ export const configFromEnv = (env: Env): { config: RoomConfig; errors: string[] 
       lostGraceMs: numberFromEnv(env, "SCREENSY_LOST_GRACE_MS", 300_000),
       pingIntervalMs: numberFromEnv(env, "SCREENSY_PING_INTERVAL_MS", 15_000),
       maxPresenters: numberFromEnv(env, "SCREENSY_MAX_PRESENTERS", 4),
+      maxCameras: numberFromEnv(env, "SCREENSY_MAX_CAMERAS", 4),
       stunUrls,
     },
     errors: invalid.length > 0 ? [`SCREENSY_STUN_URLS has invalid URLs: ${invalid.join(", ")}`] : [],
@@ -376,6 +382,7 @@ class Room {
       resumeToken: participant.resumeToken,
       roomInstanceId: this.instanceId,
       maxPresenters: this.config.maxPresenters,
+      maxCameras: this.config.maxCameras,
       iceServers: iceServersFor(this.config.stunUrls, connection.hostname),
     });
 
@@ -420,7 +427,7 @@ class Room {
         break;
       }
       case "joincall":
-        this.joinCall(participant, message.muted);
+        this.joinCall(participant, message.muted, message.camera);
         break;
       case "leavecall":
         this.leaveCall(participant.id);
@@ -431,6 +438,7 @@ class Room {
 
         if (call != null) {
           call.muted = message.muted;
+          call.camera = this.allowCamera(participant, call, message.camera);
           this.broadcastState();
         }
 
@@ -546,18 +554,40 @@ class Room {
   /**
    * Adds the participant to the call with a new stream, also if they are in it already
    */
-  private joinCall(participant: Participant, muted: boolean): void {
+  private joinCall(participant: Participant, muted: boolean, camera: boolean): void {
     const streamId = (this.nextStreamId++).toString();
-    const call = this.calls.find((call) => call.participantId === participant.id);
+    let call = this.calls.find((call) => call.participantId === participant.id);
 
     if (call == null) {
-      this.calls.push({ participantId: participant.id, streamId, muted });
+      call = { participantId: participant.id, streamId, muted, camera: false };
+      this.calls.push(call);
     } else {
       call.streamId = streamId;
       call.muted = muted;
     }
 
+    call.camera = this.allowCamera(participant, call, camera);
+
     this.broadcastState();
+  }
+
+  /**
+   * Whether the camera of a participant in the call may be on. Turning it on in a room that has reached the limit is
+   * answered with "camerarejected".
+   */
+  private allowCamera(participant: Participant, call: CallState, wanted: boolean): boolean {
+    if (!wanted || call.camera) {
+      return wanted;
+    }
+
+    const cameras = this.calls.filter((other) => other.camera).length;
+
+    if (cameras >= this.config.maxCameras) {
+      sendTo(participant, { type: "camerarejected" });
+      return false;
+    }
+
+    return true;
   }
 
   private leaveCall(participantId: string): void {

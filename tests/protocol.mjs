@@ -44,6 +44,8 @@ const SERVER_ENV = {
   SCREENSY_PING_INTERVAL_MS: String(PING_MS),
   // The checks of takeovers are simplest with one presenter; the browser checks also run with four
   SCREENSY_MAX_PRESENTERS: "1",
+  // Two cameras, so that the third one is turned away
+  SCREENSY_MAX_CAMERAS: "2",
   // One URL with {host} and one without
   SCREENSY_STUN_URLS: "stun:{host},stun:stun.example.com:3478",
 };
@@ -615,21 +617,21 @@ test("joincall, callstate and leavecall; a closed socket leaves the call, also f
   await a.join(room, "A");
   await b.join(room, "B");
   assert.deepEqual((await lastState(b)).calls, []);
-  a.send({ type: "joincall", muted: false });
+  a.send({ type: "joincall", muted: false, camera: false });
   let s = await lastState(b, (s) => s.calls.length === 1);
   const first = s.calls[0];
-  assert.deepEqual(first, { participantId: a.welcome.selfId, streamId: first.streamId, muted: false });
-  a.send({ type: "callstate", muted: true });
+  assert.deepEqual(first, { participantId: a.welcome.selfId, streamId: first.streamId, muted: false, camera: false });
+  a.send({ type: "callstate", muted: true, camera: false });
   s = await lastState(b, (s) => s.calls[0]?.muted === true);
   // Joining again gives a new stream, with the mute state that it names
-  a.send({ type: "joincall", muted: false });
+  a.send({ type: "joincall", muted: false, camera: false });
   s = await lastState(b, (s) => s.calls[0]?.streamId !== first.streamId);
   assert.equal(s.calls.length, 1);
   assert.equal(s.calls[0].muted, false);
   // A call stream does not share its ID with a presentation
   const accepted = await b.present();
   assert.notEqual(accepted.streamId, s.calls[0].streamId);
-  b.send({ type: "joincall", muted: true });
+  b.send({ type: "joincall", muted: true, camera: false });
   s = await lastState(a, (s) => s.calls.length === 2);
   assert.deepEqual(
     s.calls.map((call) => [call.participantId, call.muted]),
@@ -642,7 +644,7 @@ test("joincall, callstate and leavecall; a closed socket leaves the call, also f
   a.drain();
   a.send({ type: "leavecall" });
   await lastState(a, (s) => s.calls.length === 1);
-  a.send({ type: "callstate", muted: true });
+  a.send({ type: "callstate", muted: true, camera: false });
   await a.none((m) => m.type === "roomstate");
   // The presenter keeps the seat for the grace period, but leaves the call
   await b.terminate();
@@ -659,7 +661,7 @@ test("signals of a call stream go between its owner and anyone, but not between 
   await a.join(room, "A");
   await b.join(room, "B");
   await c.join(room, "C");
-  a.send({ type: "joincall", muted: false });
+  a.send({ type: "joincall", muted: false, camera: false });
   const { streamId } = (await lastState(c, (s) => s.calls.length === 1)).calls[0];
   const sig = (to, kind = "offer") => ({
     type: "signal",
@@ -684,6 +686,46 @@ test("signals of a call stream go between its owner and anyone, but not between 
   await lastState(b, (s) => s.calls.length === 0);
   a.send(sig(b));
   await b.none((m) => m.type === "signal");
+  await a.close();
+  await b.close();
+  await c.close();
+});
+
+test("cameras are turned on up to the limit; the next one is rejected and stays off", async () => {
+  const room = newRoom();
+  const [a, b, c] = [new Client("a"), new Client("b"), new Client("c")];
+  assert.equal((await a.join(room, "A")).maxCameras, 2);
+  await b.join(room, "B");
+  await c.join(room, "C");
+  const cameras = (s) => Object.fromEntries(s.calls.map((call) => [call.participantId, call.camera]));
+  // Joining with the camera on counts too
+  a.send({ type: "joincall", muted: false, camera: true });
+  b.send({ type: "joincall", muted: false, camera: false });
+  c.send({ type: "joincall", muted: false, camera: false });
+  let s = await lastState(c, (s) => s.calls.length === 3);
+  assert.equal(cameras(s)[a.welcome.selfId], true);
+  b.send({ type: "callstate", muted: false, camera: true });
+  s = await lastState(c, (s) => cameras(s)[b.welcome.selfId] === true);
+  // The third camera: rejected, and off in the room state
+  c.send({ type: "callstate", muted: true, camera: true });
+  await c.type("camerarejected");
+  s = await lastState(a, (s) => s.calls.find((call) => call.participantId === c.welcome.selfId)?.muted === true);
+  assert.equal(cameras(s)[c.welcome.selfId], false);
+  // Joining again with the camera on is rejected as well, and keeps the others' cameras
+  c.send({ type: "joincall", muted: false, camera: true });
+  await c.type("camerarejected");
+  // A camera that was on stays on when its owner joins again
+  a.send({ type: "joincall", muted: false, camera: true });
+  await a.none((m) => m.type === "camerarejected");
+  // Turning one off frees the place
+  b.send({ type: "callstate", muted: false, camera: false });
+  await lastState(c, (s) => cameras(s)[b.welcome.selfId] === false);
+  c.send({ type: "callstate", muted: false, camera: true });
+  s = await lastState(a, (s) => cameras(s)[c.welcome.selfId] === true);
+  assert.deepEqual(
+    s.calls.filter((call) => call.camera).map((call) => call.participantId),
+    [a.welcome.selfId, c.welcome.selfId],
+  );
   await a.close();
   await b.close();
   await c.close();

@@ -23,3 +23,20 @@ export const formatCountdown = (milliseconds: number): string => {
 
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 };
+
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+/**
+ * Formats a size in bytes with decimal units, such as "1.5 MB"
+ */
+export const formatBytes = (bytes: number): string => {
+  let value = bytes;
+  let unit = 0;
+
+  while (value >= 1000 && unit < BYTE_UNITS.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+
+  return unit === 0 ? `${value} B` : `${value.toFixed(1)} ${BYTE_UNITS[unit]}`;
+};
