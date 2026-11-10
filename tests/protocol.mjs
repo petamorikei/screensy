@@ -717,7 +717,9 @@ test("cameras are turned on up to the limit; the next one is rejected and stays 
   // A camera that was on stays on when its owner joins again
   a.send({ type: "joincall", muted: false, camera: true });
   await a.none((m) => m.type === "camerarejected");
-  // Turning one off frees the place
+  // Turning one off frees the place. C still has the states from before B's camera was on, so it forgets them, to wait
+  // for the one after B's change: otherwise C could ask before the server has freed the place.
+  c.drain();
   b.send({ type: "callstate", muted: false, camera: false });
   await lastState(c, (s) => cameras(s)[b.welcome.selfId] === false);
   c.send({ type: "callstate", muted: false, camera: true });
