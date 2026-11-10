@@ -26,9 +26,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Node, pnpm and the rest of mise.toml; prek for the "prepare" script of pnpm install
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -39,8 +39,8 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: jdx/mise-action@v3
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter screensy-cloudflare run cf:deploy
         env:
