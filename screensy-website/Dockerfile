@@ -41,12 +41,11 @@ WORKDIR /app
 # The source map carries the sources of the bundle
 COPY --from=typescript_builder /app/screensy-website/screensy.js ./
 COPY --from=typescript_builder /app/screensy-website/screensy.js.map ./
+COPY --from=typescript_builder /app/screensy-website/screensy.css ./
 
 COPY --from=go_builder /go/src/app/screensy-website ./
 
 COPY screensy-website/translations/ ./translations
-
-COPY screensy-website/styles.css ./
 
 EXPOSE 8080
 

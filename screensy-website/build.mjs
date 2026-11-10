@@ -1,5 +1,6 @@
-// Bundles the browser client (src/, the shared protocol and Zod) into screensy.js, a classic script that the pages
-// load with a plain <script>. Type checking is separate: `pnpm typecheck` runs tsc.
+// Bundles the browser client (src/, the shared protocol, Zod, React and Mantine) into screensy.js, a classic script
+// that the pages load with a plain <script>, and its CSS (Mantine's and the CSS Modules of src/) into screensy.css.
+// Type checking is separate: `pnpm typecheck` runs tsc.
 import { build } from "esbuild";
 
 // LibreJS reads this notice at the top of the script. The source map carries the sources (sourcesContent).
@@ -29,9 +30,12 @@ const banner = `/**
  */`;
 
 await build({
-  entryPoints: ["src/main.ts"],
+  entryPoints: ["src/main.tsx"],
   outfile: "screensy.js",
   bundle: true,
+  jsx: "automatic",
+  // React and Mantine leave out their development checks
+  define: { "process.env.NODE_ENV": JSON.stringify("production") },
   format: "iife",
   target: "es2022",
   minify: true,

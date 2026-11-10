@@ -1,6 +1,5 @@
 import type { ClientMessage, MessageJoin, ServerMessage } from "screensy-protocol";
 import { ServerMessageSchema } from "screensy-protocol";
-import { hidePopup, showPopup } from "./dom.ts";
 
 export type MessageSender = (message: MessageJoin | ClientMessage) => void;
 
@@ -13,6 +12,10 @@ export class SignalingConnection {
   public onopen: (() => void) | null = null;
   public onclose: (() => void) | null = null;
   public onmessage: ((message: ServerMessage) => void) | null = null;
+  /**
+   * The first connection failed: the page may never reach the server
+   */
+  public onconnectfailed: (() => void) | null = null;
 
   private readonly url: string;
   private socket: WebSocket | null = null;
@@ -42,13 +45,12 @@ export class SignalingConnection {
     socket.onopen = () => {
       this.attempt = 0;
       this.hasConnected = true;
-      hidePopup("websocket-connect-failed");
       this.onopen?.();
     };
 
     socket.onerror = () => {
       if (!this.hasConnected) {
-        showPopup("websocket-connect-failed");
+        this.onconnectfailed?.();
       }
     };
 

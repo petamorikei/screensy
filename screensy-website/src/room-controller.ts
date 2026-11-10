@@ -4,16 +4,31 @@ import { CallController } from "./call-controller.ts";
 import { capturesOwnAudio } from "./capture.ts";
 import { Chat } from "./chat.ts";
 import type { ChatFile, ChatMessage } from "./chat-protocol.ts";
-import { showPopup } from "./dom.ts";
 import { cleanFileName, FileTransfers } from "./file-transfer.ts";
 import { formatBytes } from "./format.ts";
+import { displayName, t } from "./i18n/index.ts";
 import { IncomingStream } from "./incoming-stream.ts";
+import { showNotice } from "./notices.tsx";
 import { OutgoingStream } from "./outgoing-stream.ts";
 import { PeerMesh } from "./peer-mesh.ts";
 import type { QualitySettings } from "./quality.ts";
 import { displayMediaOptions, readQuality, writeQuality } from "./quality.ts";
 import type { MessageSender } from "./signaling.ts";
 import { SignalingConnection } from "./signaling.ts";
+import {
+  blurStrengthAtom,
+  chatAtom,
+  dialogAtom,
+  ownNameAtom,
+  participantsAtom,
+  qualityAtom,
+  stageAtom,
+  statsAtom,
+  store,
+  toolbarAtom,
+  unsupportedAtom,
+} from "./state/atoms.ts";
+import type { ChatFileView, StatusId, TileView } from "./state/views.ts";
 import type { StatsDirection } from "./stats.ts";
 import { StatsCollector } from "./stats.ts";
 import {
@@ -26,10 +41,12 @@ import {
 } from "./storage.ts";
 import type { TileContext } from "./tile-views.ts";
 import { cameraTileViews, ownTile, tileViews } from "./tile-views.ts";
-import type { EchoChoice } from "./ui/call-panel.ts";
-import type { ChatFileView } from "./ui/chat-panel.ts";
-import type { DialogMode, StatusId, TileView } from "./ui/types.ts";
-import { Ui } from "./ui/ui.ts";
+
+/**
+ * Which way to go when the shared sound would carry the call back: keep hearing the call without the shared sound, or
+ * share the sound and mute the call on this page
+ */
+export type EchoChoice = "call" | "screen";
 
 const STATS_INTERVAL_MS = 1000;
 
@@ -55,7 +72,6 @@ const streamOwner = (state: MessageRoomState, streamId: string): string | null =
  */
 export class RoomController {
   private readonly roomId: string;
-  private readonly ui: Ui;
   private readonly signaling: SignalingConnection;
   /**
    * The STUN servers from the latest "welcome". New connections always take the latest ones.
@@ -108,7 +124,7 @@ export class RoomController {
   /**
    * This client's part of the call
    */
-  private readonly calls: CallController;
+  public readonly call: CallController;
 
   /**
    * The choice about the shared sound, which belongs to one capture: a new screen asks again
@@ -125,7 +141,7 @@ export class RoomController {
    */
   private offerToPresent: boolean;
 
-  private dialogMode: DialogMode | null = null;
+  private dialogMode: "start" | "resume" | null = null;
 
   /**
    * When the grace period of each reconnecting presenter ends, by participant ID, in performance.now() time. The
@@ -166,11 +182,9 @@ export class RoomController {
     this.roomId = roomId.toLowerCase();
     this.offerToPresent = isCreator;
     this.canPresent = "getDisplayMedia" in navigator.mediaDevices;
-    this.ui = new Ui();
     this.quality = readQuality();
-    this.ui.menu.setQuality(this.quality);
-    this.ui.menu.showQualitySection(this.canPresent);
-    this.ui.menu.setOwnName(this.storedName());
+    store.set(qualityAtom, { visible: this.canPresent, settings: this.quality });
+    store.set(ownNameAtom, this.storedName());
 
     const webSocketProtocol = window.location.protocol === "http:" ? "ws" : "wss";
     this.signaling = new SignalingConnection(`${webSocketProtocol}://${location.host}${location.pathname}`);
@@ -192,39 +206,27 @@ export class RoomController {
     this.mesh.onfilesmessage = (peerId: string, data: string | ArrayBuffer) => this.files.handleMessage(peerId, data);
     this.files.onchange = () => this.showChat(this.chatMessages);
     this.chat.onchange = (messages: readonly ChatMessage[]) => this.showChat(messages);
-    this.ui.chat.onattach = (file: File) => this.attachFile(file);
-    this.ui.chat.ondownload = (fileId: string) => this.downloadFile(fileId);
-    this.ui.chat.oncanceldownload = (fileId: string) => this.files.cancel(fileId);
-    this.ui.chat.onresume = (fileId: string, file: File) => this.resumeFile(fileId, file);
-    this.chat.onlive = () => this.ui.chat.addUnread();
-    this.ui.chat.onsend = (text: string) => this.sendChat(text);
-    this.calls = new CallController({
-      ui: this.ui,
+    this.chat.onlive = () => store.set(chatAtom, (chat) => ({ ...chat, liveCount: chat.liveCount + 1 }));
+    this.call = new CallController({
       sendMessage: this.sendMessage,
       rtcConfig: () => this.rtcConfig,
       render: () => this.render(),
       room: () => (this.state == null || this.selfId == null ? null : { state: this.state, selfId: this.selfId }),
       incoming: (streamId: string) => this.incoming.get(streamId),
     });
-    this.ui.call.onechochoice = (choice: EchoChoice) => this.chooseEcho(choice);
 
-    this.signaling.onopen = () => this.join();
+    this.signaling.onopen = () => {
+      // Reached at last: the page works
+      if (store.get(unsupportedAtom) === "websocket-failed") {
+        store.set(unsupportedAtom, null);
+      }
+
+      this.join();
+    };
     this.signaling.onclose = () => this.render();
     this.signaling.onmessage = (message: ServerMessage) => this.handleMessage(message);
 
-    this.ui.toolbar.onpresent = () => this.openStartDialog();
-    this.ui.toolbar.onstop = () => this.stopPresenting();
-    this.ui.dialog.onconfirm = (name: string, replace: string | null) => this.confirmDialog(name, replace);
-    this.ui.dialog.oncancel = () => this.cancelDialog();
-    this.ui.toolbar.onswitch = () => this.switchScreen();
-    this.ui.toolbar.onhide = (hidden: boolean) => this.setHidden(hidden);
-    this.ui.toolbar.onblur = (blurred: boolean) => this.setBlurred(blurred);
-    this.ui.toolbar.onblurstrength = (strength: number) => this.changeBlurStrength(strength);
-    this.ui.toolbar.setBlurStrength(this.blurStrength);
-    this.ui.menu.onqualitychange = (quality: QualitySettings) => this.changeQuality(quality);
-    this.ui.stage.onvideoresize = () => this.outgoing?.refreshQuality();
-    this.ui.menu.onnamechange = (name: string) => this.changeName(name);
-    this.ui.menu.onmenutoggle = (open: boolean) => this.toggleStats(open);
+    this.signaling.onconnectfailed = () => store.set(unsupportedAtom, "websocket-failed");
 
     const roomIdWords = roomId.split(/(?=[A-Z])/);
     document.title = `${roomIdWords.join(" ")} | screensy`;
@@ -240,7 +242,7 @@ export class RoomController {
     this.mesh.reset();
     this.chat.close();
     this.files.close();
-    this.calls.stop();
+    this.call.stop();
   }
 
   private get resumeStorageKey(): string {
@@ -286,7 +288,7 @@ export class RoomController {
           // Someone else filled the room while the dialog was open
           this.outgoing.stop();
           this.outgoing = null;
-          this.ui.notices.showNotice("notice-full");
+          showNotice("full");
           this.render();
         } else {
           this.loseSeat();
@@ -294,7 +296,7 @@ export class RoomController {
 
         break;
       case "camerarejected":
-        this.calls.handleCameraRejected();
+        this.call.handleCameraRejected();
         break;
       case "replaced":
         // Another tab uses this participant. Join as a new participant when the server closes this socket.
@@ -316,15 +318,14 @@ export class RoomController {
     this.outgoing = null;
     this.resolveOnNextState = false;
     // The other tab has to join the call itself
-    this.calls.stop();
+    this.call.stop();
 
     if (this.dialogMode === "resume") {
-      this.dialogMode = null;
-      this.ui.dialog.close();
+      this.closeDialog();
     }
 
     if (hadSeat) {
-      this.ui.notices.showNotice("notice-moved-to-other-tab");
+      showNotice("moved-to-other-tab");
     }
 
     this.render();
@@ -349,7 +350,7 @@ export class RoomController {
       this.resolveOnNextState = true;
     }
 
-    this.calls.handleWelcome();
+    this.call.handleWelcome();
   }
 
   private handleRoomState(state: MessageRoomState): void {
@@ -374,7 +375,7 @@ export class RoomController {
 
     // The server's version of the name, which also follows a change made in the start dialog
     if (self != null) {
-      this.ui.menu.setOwnName(self.name);
+      store.set(ownNameAtom, self.name);
     }
 
     this.showParticipants(state, selfId);
@@ -383,7 +384,7 @@ export class RoomController {
       this.mesh.sync(state.participants, selfId, this.connectionId);
     }
 
-    this.calls.handleRoomState(state, selfId);
+    this.call.handleRoomState(state, selfId);
 
     if (this.outgoing != null) {
       if (this.outgoing.streamId == null) {
@@ -412,12 +413,11 @@ export class RoomController {
       } else if (this.dialogMode !== "resume") {
         // This client reloaded while presenting
         this.dialogMode = "resume";
-        this.ui.dialog.open("resume", null, this.storedName());
+        store.set(dialogAtom, { mode: "resume", full: null, name: this.storedName() });
       }
     } else if (this.dialogMode === "resume") {
       // The seat expired or was taken while the resume dialog was open
-      this.dialogMode = null;
-      this.ui.dialog.close();
+      this.closeDialog();
       this.showSeatLostNotice();
     }
 
@@ -440,7 +440,7 @@ export class RoomController {
         if (this.canPresent) {
           this.openStartDialog();
         } else {
-          showPopup("screensharing-not-supported");
+          showNotice("screensharing-unsupported");
         }
       }
     }
@@ -454,7 +454,7 @@ export class RoomController {
       return;
     }
 
-    if (this.calls.handleSignal(message)) {
+    if (this.call.handleSignal(message)) {
       return;
     }
 
@@ -488,7 +488,7 @@ export class RoomController {
     stream.handleSignal(message).catch((error) => console.warn("Could not handle a signal.", error));
   }
 
-  private openStartDialog(): void {
+  openStartDialog(): void {
     if (this.outgoing != null || !this.canPresent) {
       return;
     }
@@ -507,13 +507,17 @@ export class RoomController {
         : null;
 
     this.dialogMode = "start";
-    this.ui.dialog.open("start", full, this.storedName());
+    store.set(dialogAtom, { mode: "start", full, name: this.storedName() });
     this.render();
   }
 
-  private confirmDialog(name: string, replace: string | null): void {
+  /**
+   * Starts or resumes presenting with the name and the presenter to take over from the dialog. Must be called in the
+   * handler of the click: getDisplayMedia comes first, while the click still counts as a user activation.
+   */
+  confirmDialog(name: string, replace: string | null): void {
     const mode = this.dialogMode;
-    this.dialogMode = null;
+    this.closeDialog();
 
     // Call getDisplayMedia before anything else, while the click still counts as a user activation
     let capture: Promise<MediaStream>;
@@ -530,7 +534,7 @@ export class RoomController {
     capture.then(
       (mediaStream: MediaStream) => this.beginPresenting(mediaStream, name, mode === "resume", replace),
       () => {
-        this.ui.notices.showNotice("notice-access-denied");
+        showNotice("access-denied");
 
         if (mode === "resume") {
           this.sendMessage({ type: "stoppresenting" });
@@ -541,13 +545,18 @@ export class RoomController {
     );
   }
 
-  private cancelDialog(): void {
+  cancelDialog(): void {
     if (this.dialogMode === "resume") {
       this.sendMessage({ type: "stoppresenting" });
     }
 
-    this.dialogMode = null;
+    this.closeDialog();
     this.render();
+  }
+
+  private closeDialog(): void {
+    this.dialogMode = null;
+    store.set(dialogAtom, null);
   }
 
   private beginPresenting(mediaStream: MediaStream, name: string, resume: boolean, replace: string | null): void {
@@ -590,9 +599,10 @@ export class RoomController {
   }
 
   /**
-   * Lets the presenter choose another screen, without reconnecting to the viewers
+   * Lets the presenter choose another screen, without reconnecting to the viewers. Must be called in the handler of
+   * the click, like confirmDialog.
    */
-  private switchScreen(): void {
+  switchScreen(): void {
     const outgoing = this.outgoing;
 
     if (outgoing == null || this.trackChangeInProgress) {
@@ -631,7 +641,7 @@ export class RoomController {
           }
 
           if (!switched) {
-            this.ui.notices.showNotice("notice-switch-failed");
+            showNotice("switch-failed");
           } else if (mediaStream.getVideoTracks()[0]?.readyState === "ended") {
             // Sharing ended before the switch was complete
             this.stopPresenting();
@@ -650,7 +660,7 @@ export class RoomController {
   /**
    * Remembers the choice about the shared sound for the current capture
    */
-  private chooseEcho(choice: EchoChoice): void {
+  chooseEcho(choice: EchoChoice): void {
     if (this.outgoing != null) {
       this.echoChoice = { stream: this.outgoing.mediaStream, choice };
       this.render();
@@ -660,8 +670,9 @@ export class RoomController {
   /**
    * Remembers the name and tells the room. While disconnected, the next "join" carries it.
    */
-  private changeName(name: string): void {
+  changeName(name: string): void {
     writeStorage(getLocalStorage, NAME_STORAGE_KEY, name);
+    store.set(ownNameAtom, name);
 
     if (this.signaling.isOpen && this.selfId != null) {
       this.sendMessage({ type: "setname", name });
@@ -671,7 +682,7 @@ export class RoomController {
   /**
    * Sends a chat message with the own participant ID and name, as the latest room state has them
    */
-  private sendChat(text: string): boolean {
+  sendChat(text: string): boolean {
     const self = this.state?.participants.find((participant) => participant.id === this.selfId);
 
     if (self == null) {
@@ -684,7 +695,7 @@ export class RoomController {
   /**
    * Shares a file in the chat: the others ask this page for it
    */
-  private attachFile(file: File): boolean {
+  attachFile(file: File): boolean {
     const self = this.state?.participants.find((participant) => participant.id === this.selfId);
 
     if (self == null) {
@@ -705,7 +716,7 @@ export class RoomController {
    * Shares the file of an own message again, after a reload forgot it: the person chooses it again, and it has to
    * have the same name and size
    */
-  private resumeFile(fileId: string, file: File): void {
+  resumeFile(fileId: string, file: File): void {
     const message = this.chatMessages.find((message) => message.file?.id === fileId);
 
     if (message?.file == null || !this.chat.isOwn(message)) {
@@ -713,7 +724,7 @@ export class RoomController {
     }
 
     if (chatFileName(file) !== message.file.name || file.size !== message.file.size) {
-      this.ui.notices.showNotice("notice-file-mismatch");
+      showNotice("file-mismatch");
       return;
     }
 
@@ -721,7 +732,11 @@ export class RoomController {
     this.showChat(this.chatMessages);
   }
 
-  private downloadFile(fileId: string): void {
+  cancelDownload(fileId: string): void {
+    this.files.cancel(fileId);
+  }
+
+  downloadFile(fileId: string): void {
     const message = this.chatMessages.find((message) => message.file?.id === fileId);
 
     if (message?.file != null) {
@@ -731,15 +746,17 @@ export class RoomController {
 
   private showChat(messages: readonly ChatMessage[]): void {
     this.chatMessages = messages;
-    this.ui.chat.showMessages(
-      messages.map((message) => ({
-        name: this.ui.displayName(message.name, message.participantId),
+    store.set(chatAtom, (chat) => ({
+      ...chat,
+      entries: messages.map((message) => ({
+        key: `${message.authorId}:${message.seq}`,
+        name: displayName(message.name, message.participantId),
         sentAt: message.sentAt,
         text: message.text,
         self: this.chat.isOwn(message),
         file: message.file == null ? null : this.fileView(message, message.file),
       })),
-    );
+    }));
   }
 
   /**
@@ -784,10 +801,11 @@ export class RoomController {
     const rank = (id: string) => (seats.has(id) ? 0 : id === selfId ? 1 : 2);
     const participants = [...state.participants].sort((a, b) => rank(a.id) - rank(b.id));
 
-    this.ui.menu.showParticipants(
+    store.set(
+      participantsAtom,
       participants.map((participant) => ({
         id: participant.id,
-        name: participant.name,
+        name: displayName(participant.name, participant.id),
         you: participant.id === selfId,
         presenting: seats.has(participant.id),
         reconnecting: seats.get(participant.id)?.status === "reconnecting",
@@ -800,13 +818,16 @@ export class RoomController {
    * The name of a connection of the call in the statistics
    */
   private callName(participantId: string): string {
-    return this.ui.callStatsName(this.nameOf(participantId));
+    return t("stats.call", { name: this.nameOf(participantId) });
   }
 
-  private toggleStats(open: boolean): void {
+  /**
+   * Collects the statistics while the menu is open
+   */
+  setMenuOpen(open: boolean): void {
     if (open) {
       // The names of the devices show once the page may use them
-      void this.calls.refreshDevices();
+      void this.call.refreshDevices();
     }
 
     if (open && this.statsTimer == null) {
@@ -815,6 +836,7 @@ export class RoomController {
     } else if (!open && this.statsTimer != null) {
       window.clearInterval(this.statsTimer);
       this.statsTimer = null;
+      store.set(statsAtom, []);
     }
   }
 
@@ -829,15 +851,20 @@ export class RoomController {
     this.collectingStats = true;
 
     try {
-      const targets: { name: string; direction: StatsDirection; connection: RTCPeerConnection }[] = [];
+      const targets: { key: string; name: string; direction: StatsDirection; connection: RTCPeerConnection }[] = [];
 
       for (const { participantId, connection } of this.outgoing?.connections() ?? []) {
-        targets.push({ name: this.nameOf(participantId), direction: "send", connection });
+        targets.push({ key: `send:${participantId}`, name: this.nameOf(participantId), direction: "send", connection });
       }
 
       // The call: what this client sends, and what it receives from the others in the call
-      for (const { participantId, connection } of this.calls.connections()) {
-        targets.push({ name: this.callName(participantId), direction: "send", connection });
+      for (const { participantId, connection } of this.call.connections()) {
+        targets.push({
+          key: `call-send:${participantId}`,
+          name: this.callName(participantId),
+          direction: "send",
+          connection,
+        });
       }
 
       for (const call of this.state?.calls ?? []) {
@@ -845,6 +872,7 @@ export class RoomController {
 
         if (call.participantId !== this.selfId && stream != null) {
           targets.push({
+            key: `call-receive:${call.participantId}`,
             name: this.callName(call.participantId),
             direction: "receive",
             connection: stream.connection,
@@ -857,6 +885,7 @@ export class RoomController {
 
         if (presenter.participantId !== this.selfId && presenter.status === "live" && stream != null) {
           targets.push({
+            key: `receive:${presenter.participantId}`,
             name: this.nameOf(presenter.participantId),
             direction: "receive",
             connection: stream.connection,
@@ -866,6 +895,7 @@ export class RoomController {
 
       const entries = await Promise.all(
         targets.map(async (target) => ({
+          key: target.key,
           name: target.name,
           direction: target.direction,
           stats: await this.statsCollector.collect(target.connection, target.direction),
@@ -874,7 +904,7 @@ export class RoomController {
 
       // The menu may have closed meanwhile
       if (this.statsTimer != null) {
-        this.ui.menu.showStats(entries);
+        store.set(statsAtom, entries);
       }
     } catch (error) {
       console.warn("Could not read the connection statistics.", error);
@@ -883,13 +913,22 @@ export class RoomController {
     }
   }
 
-  private changeQuality(quality: QualitySettings): void {
+  changeQuality(quality: QualitySettings): void {
     this.quality = quality;
     writeQuality(quality);
+    store.set(qualityAtom, { visible: this.canPresent, settings: quality });
     this.outgoing?.setQuality(quality);
   }
 
-  private setBlurred(blurred: boolean): void {
+  /**
+   * Applies the quality settings again, after the size of the own preview changed: a resized shared window changes the
+   * scale factor
+   */
+  refreshQuality(): void {
+    this.outgoing?.refreshQuality();
+  }
+
+  setBlurred(blurred: boolean): void {
     const outgoing = this.outgoing;
 
     if (outgoing == null || this.trackChangeInProgress) {
@@ -903,7 +942,7 @@ export class RoomController {
       .setBlurred(blurred)
       .then((changed: boolean) => {
         if (!changed && this.outgoing === outgoing) {
-          this.ui.notices.showNotice("notice-blur-failed");
+          showNotice("blur-failed");
         }
       })
       .finally(() => {
@@ -912,18 +951,19 @@ export class RoomController {
       });
   }
 
-  private changeBlurStrength(strength: number): void {
+  changeBlurStrength(strength: number): void {
     this.blurStrength = strength;
+    store.set(blurStrengthAtom, strength);
     writeStorage(getLocalStorage, BLUR_STORAGE_KEY, strength.toString());
     this.outgoing?.setBlurStrength(strength);
   }
 
-  private setHidden(hidden: boolean): void {
+  setHidden(hidden: boolean): void {
     this.outgoing?.setHidden(hidden);
     this.render();
   }
 
-  private stopPresenting(): void {
+  stopPresenting(): void {
     if (this.outgoing == null) {
       return;
     }
@@ -954,9 +994,9 @@ export class RoomController {
     );
 
     if (presenter == null) {
-      this.ui.notices.showNotice("notice-connection-lost");
+      showNotice("connection-lost");
     } else {
-      this.ui.notices.showNotice("notice-taken-over", this.nameOf(presenter.participantId));
+      showNotice("taken-over", this.nameOf(presenter.participantId));
     }
   }
 
@@ -974,7 +1014,7 @@ export class RoomController {
 
   private nameOf(participantId: string): string {
     const participant = this.state?.participants.find((participant) => participant.id === participantId);
-    return this.ui.displayName(participant?.name, participantId);
+    return displayName(participant?.name, participantId);
   }
 
   /**
@@ -993,21 +1033,24 @@ export class RoomController {
     let status: StatusId | null = null;
 
     if (!this.signaling.everConnected) {
-      status = "status-connecting";
+      status = "connecting";
     } else if (!this.signaling.isOpen) {
-      status = "status-server-reconnecting";
+      status = "server-reconnecting";
     } else if (state == null) {
-      status = "status-connecting";
+      status = "connecting";
     } else if (tiles.length === 0) {
-      status = "status-waiting";
+      status = "waiting";
     }
 
-    this.ui.stage.showTiles(tiles);
-    this.ui.notices.showStatus(status);
-    this.ui.chat.setEnabled(ready && this.chat.ready);
-    this.ui.chat.setReach(this.mesh.openPeers().length, this.mesh.targetCount);
-    this.calls.show(ready, (participantId) => this.nameOf(participantId));
-    this.updateEchoProtection(tiles);
+    const echo = this.updateEchoProtection(tiles);
+    store.set(stageAtom, { tiles, status, echoMuted: echo.echoMuted });
+    store.set(chatAtom, (chat) => ({
+      ...chat,
+      enabled: ready && this.chat.ready,
+      open: this.mesh.openPeers().length,
+      total: this.mesh.targetCount,
+    }));
+    this.call.show(ready, (participantId) => this.nameOf(participantId), echo);
 
     const counting = tiles.some((tile) => tile.countdown != null);
 
@@ -1021,7 +1064,7 @@ export class RoomController {
     const viewers =
       state?.participants.filter((participant) => participant.connected && participant.id !== this.selfId).length ?? 0;
 
-    this.ui.toolbar.show({
+    store.set(toolbarAtom, {
       visible: ready || this.outgoing != null,
       canPresent: ready && this.canPresent && this.outgoing == null && this.dialogMode == null,
       presenting: this.outgoing != null,
@@ -1043,8 +1086,8 @@ export class RoomController {
       incomingStream: (streamId) => this.incoming.get(streamId)?.mediaStream ?? null,
       nameOf: (participantId) => this.nameOf(participantId),
       graceDeadline: (participantId) => this.graceDeadlines.get(participantId),
-      ownCamera: this.calls.ownCamera,
-      speaking: (participantId) => this.calls.isSpeaking(participantId),
+      ownCamera: this.call.ownCamera,
+      speaking: (participantId) => this.call.isSpeaking(participantId),
     };
   }
 
@@ -1078,23 +1121,21 @@ export class RoomController {
    * Mutes the other presenters on this page while the own capture may contain this page's sound. With the call, the
    * shared sound is off until the person chooses between it and hearing the call.
    */
-  private updateEchoProtection(tiles: TileView[]): void {
+  private updateEchoProtection(tiles: TileView[]): { echoMuted: boolean; echoChoice: boolean; audioMuted: boolean } {
     const outgoing = this.outgoing;
     const needed = outgoing != null && capturesOwnAudio(outgoing.mediaStream);
-    this.ui.stage.setEchoMuted(needed);
 
     if (!needed) {
       this.echoNoticeShown = false;
     } else if (!this.echoNoticeShown && tiles.some((tile) => !tile.self)) {
       this.echoNoticeShown = true;
-      this.ui.notices.showNotice("notice-echo-muted");
+      showNotice("echo-muted");
     }
 
     outgoing?.refreshTrackStates();
 
     const conflict = outgoing != null && this.echoConflict(outgoing.mediaStream);
     const choice = outgoing == null ? null : this.echoChoiceFor(outgoing.mediaStream);
-    this.ui.call.showEchoChoice(conflict && choice == null);
-    this.ui.callAudio.setMuted(conflict && choice === "screen");
+    return { echoMuted: needed, echoChoice: conflict && choice == null, audioMuted: conflict && choice === "screen" };
   }
 }

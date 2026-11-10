@@ -8,7 +8,7 @@ const out = new URL("./public/", import.meta.url);
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out);
 
-for (const file of ["screensy.js", "screensy.js.map", "styles.css"]) {
+for (const file of ["screensy.js", "screensy.js.map", "screensy.css", "screensy.css.map"]) {
   cpSync(new URL(file, website), new URL(file, out));
 }
 

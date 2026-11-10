@@ -102,6 +102,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+-   The interface is rebuilt with React and Mantine, in a dark color scheme:
+    a toolbar with icon buttons and tooltips, the chat beside the stage, the
+    menu as a drawer from the side, and notices at the bottom. The texts come
+    from one dictionary per language instead of a copy of the page per
+    language. The stylesheet is now "screensy.css", built with the script.
 -   Replace the signaling protocol. The fixed broadcaster and viewer roles are
     gone. The server sends the state of the room to every participant and
     relays WebRTC messages per stream. The protocol is ready for several

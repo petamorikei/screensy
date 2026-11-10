@@ -4,6 +4,8 @@ node_modules/
 # Build output of the browser client
 /screensy-website/screensy.js
 /screensy-website/screensy.js.map
+/screensy-website/screensy.css
+/screensy-website/screensy.css.map
 
 # Go binary
 /screensy-website/screensy

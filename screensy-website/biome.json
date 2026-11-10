@@ -4,8 +4,14 @@
   "extends": "//",
   "linter": {
     "rules": {
+      "correctness": {
+        "noUndeclaredDependencies": "off"
+      },
       "style": {
         "noImplicitBoolean": "off"
+      },
+      "suspicious": {
+        "noReactSpecificProps": "off"
       }
     }
   }

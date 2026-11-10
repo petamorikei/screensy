@@ -1,0 +1,140 @@
+/* The tiles, laid out evenly: one fills the stage, two side by side, three or four in a 2x2 grid, and more in as many
+   columns as rows */
+.stage {
+  position: relative;
+  display: grid;
+  grid-template: 1fr / 1fr;
+  gap: 4px;
+  height: calc(100dvh - var(--app-shell-header-height, 0px));
+  padding: 4px;
+  box-sizing: border-box;
+  background-color: var(--mantine-color-dark-9);
+}
+
+.stage[data-count="2"] {
+  grid-template: 1fr / 1fr 1fr;
+}
+
+.stage[data-count="3"],
+.stage[data-count="4"] {
+  grid-template: 1fr 1fr / 1fr 1fr;
+}
+
+.stage[data-many] {
+  grid-template: none / repeat(var(--columns), 1fr);
+  grid-auto-rows: 1fr;
+}
+
+.tile {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-dark-7);
+}
+
+/* One enlarged tile, and the others in a column on the right */
+.stage[data-spotlight] {
+  grid-template: repeat(var(--others), 1fr) / 1fr minmax(160px, 22%);
+  grid-auto-rows: unset;
+}
+
+.stage[data-spotlight] .tile {
+  grid-column: 2;
+}
+
+.stage[data-spotlight] .tile[data-spotlighted] {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+
+/* Covers the tile under its bar: a click enlarges the tile */
+.spotlight {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.spotlight:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.tile[data-spotlighted] .spotlight {
+  cursor: zoom-out;
+}
+
+.tile[data-speaking] {
+  outline: 3px solid var(--mantine-color-green-6);
+  outline-offset: -3px;
+}
+
+.video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.tile[data-kind="camera"] .video {
+  object-fit: cover;
+}
+
+/* The own camera shows like a mirror, as people expect to see themselves */
+.tile[data-kind="camera"][data-self] .video {
+  transform: scaleX(-1);
+}
+
+.status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--mantine-spacing-md);
+  text-align: center;
+  background-color: rgb(0 0 0 / 60%);
+  pointer-events: none;
+}
+
+.bar {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  padding: 4px 8px;
+  background: linear-gradient(transparent, rgb(0 0 0 / 70%));
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The page-wide status, over an empty stage */
+.pageStatus {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--mantine-spacing-xl);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* The participants in the call, over the top left corner, clear of the names of the tiles at the bottom */
+.members {
+  position: absolute;
+  inset: var(--mantine-spacing-sm) auto auto var(--mantine-spacing-sm);
+  z-index: 1;
+  max-width: calc(100% - 2 * var(--mantine-spacing-sm));
+}

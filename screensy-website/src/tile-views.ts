@@ -1,6 +1,6 @@
 import type { CallState, MessageRoomState, PresenterState } from "screensy-protocol";
 import { formatCountdown } from "./format.ts";
-import type { TileView } from "./ui/types.ts";
+import type { TileView } from "./state/views.ts";
 
 /**
  * What the tiles are built from: the client's own state, beside the room state
@@ -36,7 +36,7 @@ export const ownTile = (context: TileContext): TileView => ({
   name: "",
   self: true,
   stream: context.outgoing?.previewStream ?? null,
-  status: context.outgoing?.hidden ? "status-self-hidden" : null,
+  status: context.outgoing?.hidden ? "self-hidden" : null,
   countdown: null,
   speaking: false,
 });
@@ -59,9 +59,9 @@ const remoteTile = (context: TileContext, state: MessageRoomState, presenter: Pr
 
     if (participant?.connected) {
       // Back after a reload, choosing the screen again
-      tile.status = "status-presenter-resuming";
+      tile.status = "presenter-resuming";
     } else {
-      tile.status = presenter.disconnectReason === "lost" ? "status-presenter-lost" : "status-presenter-left";
+      tile.status = presenter.disconnectReason === "lost" ? "presenter-lost" : "presenter-left";
       tile.countdown = deadline == null ? null : formatCountdown(deadline - performance.now());
     }
 
@@ -72,9 +72,9 @@ const remoteTile = (context: TileContext, state: MessageRoomState, presenter: Pr
   tile.stream = context.incomingStream(presenter.streamId);
 
   if (presenter.hidden) {
-    tile.status = "status-presenter-hidden";
+    tile.status = "presenter-hidden";
   } else if (tile.stream == null) {
-    tile.status = "status-joining";
+    tile.status = "joining";
   }
 
   return tile;
@@ -124,7 +124,7 @@ const cameraTile = (context: TileContext, call: CallState): TileView | null => {
     name: self ? "" : context.nameOf(call.participantId),
     self,
     stream,
-    status: stream == null ? "status-joining" : null,
+    status: stream == null ? "joining" : null,
     countdown: null,
     speaking: context.speaking(call.participantId),
   };
