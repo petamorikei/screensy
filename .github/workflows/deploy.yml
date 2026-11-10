@@ -1,7 +1,8 @@
 # Deploys screensy-cloudflare to Cloudflare Workers, after the checks pass.
 #
 # A deploy restarts the Durable Object and ends every room, so it runs only by hand (Actions → Deploy → Run
-# workflow) or for a version tag (v*), never for every push.
+# workflow) or for a version tag (v*), never for every push. For a tag, a deployed version then gets a GitHub release
+# with the notes that GitHub generates from the pull requests since the previous tag.
 #
 # Secrets: CLOUDFLARE_API_TOKEN (the "Edit Cloudflare Workers" template) and CLOUDFLARE_ACCOUNT_ID.
 name: Deploy
@@ -46,3 +47,15 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  release:
+    needs: deploy
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    # Only this job writes to the repository
+    permissions:
+      contents: write
+    steps:
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
