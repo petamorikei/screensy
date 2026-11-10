@@ -65,7 +65,7 @@ export const en = {
   "menu.devicesNote": "The names show after the browser has given access to a device of their kind.",
   "menu.stats": "Connection",
   "menu.statsEmpty": "No statistics. Nothing is being received or sent.",
-  "menu.quality": "Quality",
+  "menu.quality": "Presenting quality",
   "menu.frameRate": "Frame rate",
   "menu.resolution": "Resolution",
   "menu.resolutionOriginal": "Original",
@@ -74,7 +74,8 @@ export const en = {
   "menu.degradationResolution": "Resolution",
   "menu.degradationFrameRate": "Frame rate",
   "menu.degradationBalanced": "Balanced",
-  "menu.qualityNote": "These settings are saved in this browser and apply to your presentations.",
+  "menu.qualityNote":
+    "For your own presentations. The quality of what you watch depends on the presenter's settings. Saved in this browser.",
 
   "stats.call": "{name} (call)",
   "stats.state": "State",

@@ -67,7 +67,7 @@ export const ja: Messages = {
   "menu.devicesNote": "機器の名前は、その種類の機器へのアクセスをブラウザが許可したあとに表示されます。",
   "menu.stats": "接続",
   "menu.statsEmpty": "統計はありません。配信を送受信していません。",
-  "menu.quality": "画質",
+  "menu.quality": "配信の画質",
   "menu.frameRate": "フレームレート",
   "menu.resolution": "解像度",
   "menu.resolutionOriginal": "元の解像度",
@@ -76,7 +76,8 @@ export const ja: Messages = {
   "menu.degradationResolution": "解像度",
   "menu.degradationFrameRate": "フレームレート",
   "menu.degradationBalanced": "バランス",
-  "menu.qualityNote": "設定はこのブラウザに保存され、配信するときに使われます。",
+  "menu.qualityNote":
+    "自分が画面を配信するときの設定です。見ている画面の画質は、配信している人の設定で決まります。設定はこのブラウザに保存されます。",
 
   "stats.call": "{name}（通話）",
   "stats.state": "状態",
