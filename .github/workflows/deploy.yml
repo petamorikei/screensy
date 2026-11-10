@@ -1,0 +1,48 @@
+# Deploys screensy-cloudflare to Cloudflare Workers, after the checks pass.
+#
+# A deploy restarts the Durable Object and ends every room, so it runs only by hand (Actions → Deploy → Run
+# workflow) or for a version tag (v*), never for every push.
+#
+# Secrets: CLOUDFLARE_API_TOKEN (the "Edit Cloudflare Workers" template) and CLOUDFLARE_ACCOUNT_ID.
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# One deploy at a time; a second one waits instead of cancelling the first halfway
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Node, pnpm and the rest of mise.toml; prek for the "prepare" script of pnpm install
+      - uses: jdx/mise-action@v3
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:protocol
+      - run: pnpm test:protocol:cloudflare
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v3
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter screensy-cloudflare run cf:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

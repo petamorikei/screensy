@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog], and this project adheres to
     "screensy-cloudflare" package serves the page from a Worker and runs the
     rendezvous server in a Durable Object (`pnpm --filter screensy-cloudflare
     run cf:deploy`).
+-   A GitHub Actions workflow deploys to Cloudflare Workers after the lint,
+    the type checks and the protocol tests pass. It runs when started by hand
+    or for a version tag, because a deploy ends every room.
 -   The STUN servers can be chosen with an environment variable of the
     rendezvous server (`SCREENSY_STUN_URLS`). The default is Cloudflare's
     public STUN server.
