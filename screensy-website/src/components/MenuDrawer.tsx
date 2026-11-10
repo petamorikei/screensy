@@ -248,6 +248,9 @@ const QualitySection = () => {
 
   return (
     <Section title={t("menu.quality")} testId="menu-quality">
+      <Text size="xs" c="dimmed">
+        {t("menu.qualityNote")}
+      </Text>
       <NativeSelect
         data-testid="quality-frame-rate"
         label={t("menu.frameRate")}
@@ -299,9 +302,6 @@ const QualitySection = () => {
           change(degradation.success ? { degradation: degradation.data } : null);
         }}
       />
-      <Text size="xs" c="dimmed">
-        {t("menu.qualityNote")}
-      </Text>
     </Section>
   );
 };
