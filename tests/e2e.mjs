@@ -26,6 +26,8 @@ const CDP_PORT = 9333;
 const WRANGLER_PORT = 8787;
 const ORIGIN = `http://localhost:${PROXY_PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The selector of an element by its test ID: the pages name what the checks use with data-testid
+const tid = (id) => `[data-testid="${id}"]`;
 
 const children = [];
 const run = (cmd, args, opts) => {
@@ -139,6 +141,9 @@ const INIT_SCRIPT = `
 (() => {
   window.__sockets = [];
   window.__roomState = null;
+  // The first element, and every element, with a test ID
+  window.$t = (id) => document.querySelector('[data-testid="' + id + '"]');
+  window.$$t = (id) => [...document.querySelectorAll('[data-testid="' + id + '"]')];
   const NativeWebSocket = window.WebSocket;
   window.WebSocket = class extends NativeWebSocket {
     constructor(...args) {
@@ -271,8 +276,8 @@ const INIT_SCRIPT = `
 
 // The average color and the size of what the page's <video> shows, or null if it shows nothing
 const VIDEO_COLOR = `(() => {
-  const video = document.querySelector("#stage video");
-  if (video.videoWidth === 0) return null;
+  const video = document.querySelector('[data-testid="tile"] video');
+  if (video == null || video.videoWidth === 0) return null;
   const canvas = document.createElement("canvas");
   canvas.width = 32;
   canvas.height = 18;
@@ -297,34 +302,39 @@ const waitColor = async (page, desc, predicate, timeout = 10000) => {
 };
 
 const PAGE_STATE = `(() => {
-  const visible = (sel) => [...document.querySelectorAll(sel)].filter((e) => !e.classList.contains("hidden") && !e.closest(".hidden")).map((e) => e.id);
   const capture = window.__captures.at(-1);
-  const selfVideo = document.querySelector("#stage .tile[data-self] video");
-  const remoteVideos = [...document.querySelectorAll("#stage .tile:not([data-self]) video")];
+  const tiles = $$t("tile");
+  const screens = tiles.filter((tile) => tile.dataset.kind === "screen");
+  const selfVideo = screens.find((tile) => tile.hasAttribute("data-self"))?.querySelector("video");
+  const remoteVideos = screens.filter((tile) => !tile.hasAttribute("data-self")).map((tile) => tile.querySelector("video"));
   // The status of the whole page, or else that of the first tile that shows one
-  const pageStatus = document.getElementById("status").classList.contains("hidden") ? null : document.querySelector("#status > p:not(.hidden)");
-  const tileStatus = document.querySelector("#stage .tile-status:not(.hidden) [data-status]:not(.hidden)");
-  const shownStatus = pageStatus ?? tileStatus;
+  const pageStatus = $t("page-status");
+  const tileStatus = tiles.find((tile) => tile.dataset.status != null);
+  const text = (element) => element?.textContent.trim().replace(/\\s+/g, " ") ?? null;
+  const form = $t("present-form");
+  const notices = [...document.querySelectorAll('[data-testid^="notice-"]')];
+  const toolbar = $t("toolbar");
   return {
-    status: pageStatus?.id ?? tileStatus?.dataset.status ?? null,
-    statusText: shownStatus?.textContent.trim().replace(/\\s+/g, " ") ?? null,
-    tiles: [...document.querySelectorAll("#stage .tile")].map((tile) => ({
-      name: tile.querySelector(".tile-name").textContent,
+    status: pageStatus != null ? "status-" + pageStatus.dataset.status : tileStatus != null ? "status-" + tileStatus.dataset.status : null,
+    statusText: pageStatus != null ? text(pageStatus) : text(tileStatus?.querySelector('[data-testid="tile-status"]')),
+    tiles: tiles.map((tile) => ({
+      name: tile.querySelector('[data-testid="tile-name"]').textContent,
       self: tile.hasAttribute("data-self"),
-      status: tile.querySelector(".tile-status:not(.hidden) [data-status]:not(.hidden)")?.dataset.status ?? null,
+      status: tile.dataset.status == null ? null : "status-" + tile.dataset.status,
       playing: tile.querySelector("video").videoWidth > 0 && !tile.querySelector("video").paused,
       muted: tile.querySelector("video").muted,
-      spotlighted: tile.classList.contains("spotlighted"),
+      spotlighted: tile.hasAttribute("data-spotlighted"),
     })),
-    notices: visible(".notice"),
-    noticeText: [...document.querySelectorAll(".notice:not(.hidden) p")].map((p) => p.textContent.trim().replace(/\\s+/g, " ")),
-    dialogOpen: document.getElementById("present-dialog").open,
-    dialogMode: [...document.querySelectorAll("#present-dialog h1[data-mode]")].find((e) => !e.classList.contains("hidden"))?.dataset.mode ?? null,
+    notices: notices.map((notice) => notice.dataset.testid),
+    noticeText: notices.map((notice) => text(notice)),
+    dialogOpen: form != null,
+    dialogMode: form?.dataset.mode ?? null,
     // The presenters to choose from in a full room, or null when the dialog does not ask
-    replaceOptions: document.getElementById("present-replace").classList.contains("hidden") ? null : [...document.querySelectorAll("#present-replace-options label")].map((label) => ({ name: label.textContent.trim(), checked: label.querySelector("input").checked })),
-    nameValue: document.getElementById("present-name").value,
-    toolbar: visible("#toolbar button, #viewer-count"),
-    viewers: document.getElementById("viewer-count-value").textContent,
+    replaceOptions: $t("present-replace") == null ? null : $$t("present-replace-option").map((input) => ({ name: input.closest(".mantine-Radio-root").textContent.trim(), checked: input.checked })),
+    nameValue: $t("present-name")?.value ?? null,
+    // The controls in the toolbar, by test ID
+    toolbar: toolbar == null ? [] : [...toolbar.querySelectorAll("[data-testid]")].map((element) => element.dataset.testid).filter((id) => id !== "chat-unread"),
+    viewers: $t("viewers")?.textContent.match(/\\d+/)?.[0] ?? "0",
     videoLocal: capture != null && selfVideo?.srcObject === capture,
     videoPlaying: remoteVideos.some((video) => video.srcObject != null && video.videoWidth > 0 && !video.paused),
     captureLive: capture != null && capture.getVideoTracks()[0].readyState === "live",
@@ -385,11 +395,24 @@ class Page {
     throw new Error(`${this.label}: page did not load`);
   }
   // Fills in the name and submits the dialog, with a user gesture like a real click
-  submitDialog(name) {
-    return this.eval(
-      `(() => { const i = document.getElementById("present-name"); i.value = ${JSON.stringify(name)}; document.querySelector("#present-form button[type=submit]").click(); })()`,
-      true,
-    );
+  async submitDialog(name) {
+    await this.type(tid("present-name"), name);
+    // React enables the button once the name is valid
+    await sleep(50);
+    return this.click(tid("present-submit"));
+  }
+  // Sets the value of an input, a textarea or a select as typing would: React listens to the input and change events,
+  // and to focusout for onBlur
+  type(selector, value, { blur = false } = {}) {
+    return this.eval(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      element.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;
+      setter.call(element, ${JSON.stringify(value)});
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      if (${blur}) element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    })()`);
   }
   async shot(name) {
     if (!SHOTS) return;
@@ -406,6 +429,34 @@ class Page {
   }
   click(selector) {
     return this.eval(`document.querySelector(${JSON.stringify(selector)}).click()`, true);
+  }
+  // Closes a notice with its close button, and waits until it has left
+  async closeNotice(id) {
+    await this.eval(
+      `document.querySelector('[data-testid="${id}"]').closest(".mantine-Notification-root").querySelector(".mantine-Notification-closeButton").click()`,
+      true,
+    );
+    await this.waitForEval(`${id} closed`, `document.querySelector('[data-testid="${id}"]') == null`);
+  }
+  // Opens the menu, a drawer whose content only exists while it is open
+  async openMenu() {
+    if (await this.eval(`$t("menu-link") != null`)) return;
+    await this.waitForEval("the menu button", `$t("menu-open") != null`);
+    await this.click(tid("menu-open"));
+    await this.waitForEval("the menu", `$t("menu-link") != null`);
+  }
+  async closeMenu() {
+    if (await this.eval(`$t("menu-link") == null`)) return;
+    await this.eval(`document.querySelector(".mantine-Drawer-close").click()`, true);
+    await this.waitForEval("the menu closed", `$t("menu-link") == null`);
+  }
+  async waitForEval(desc, expression, timeout = 10000) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      if (await this.eval(expression)) return;
+      await sleep(100);
+    }
+    throw new Error(`${this.label}: timeout waiting for ${desc}`);
   }
 }
 
@@ -541,9 +592,7 @@ const main = async () => {
     assert.equal(s.replaceOptions, null);
     // The browser should not offer or save names: screensy remembers the name itself
     assert.equal(
-      await a.eval(
-        `["present-name", "menu-name-input"].every((id) => document.getElementById(id).autocomplete === "off") && !document.getElementById("present-name").hasAttribute("name")`,
-      ),
+      await a.eval(`$t("present-name").autocomplete === "off" && !$t("present-name").hasAttribute("name")`),
       true,
     );
     room = s.hash;
@@ -552,8 +601,8 @@ const main = async () => {
 
   await step("creator starts presenting", async () => {
     await a.submitDialog("Alice");
-    const s = await a.waitFor("presenting", (s) => s.videoLocal && s.toolbar.includes("stop-button"));
-    assert.ok(!s.toolbar.includes("present-button"));
+    const s = await a.waitFor("presenting", (s) => s.videoLocal && s.toolbar.includes("stop"));
+    assert.ok(!s.toolbar.includes("present"));
     assert.equal(s.status, null);
     assert.equal(s.viewers, "0");
     await a.shot("2-presenting-en");
@@ -564,19 +613,19 @@ const main = async () => {
     const s = await b.waitFor("video", (s) => s.videoPlaying);
     assert.equal(s.lang, "ja");
     assert.equal(s.status, null);
-    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button", "call-join-button"]);
+    assert.deepEqual(s.toolbar, ["present", "call-join", "chat-toggle", "menu-open"]);
     await a.waitFor("viewer count 1", (s) => s.viewers === "1");
     await b.shot("3-viewing-ja");
     await a.shot("3b-presenting-1-viewer-en");
   });
 
   await step("viewer takes over after the confirmation dialog", async () => {
-    await b.click("#present-button");
+    await b.click(tid("present"));
     const s = await b.waitFor("takeover dialog", (s) => s.dialogOpen);
     assert.deepEqual(s.replaceOptions, [{ name: "Alice", checked: true }]);
     await b.shot("4-takeover-dialog-ja");
     await b.submitDialog("Bob");
-    await b.waitFor("B presenting", (s) => s.videoLocal && s.toolbar.includes("stop-button"));
+    await b.waitFor("B presenting", (s) => s.videoLocal && s.toolbar.includes("stop"));
     const sa = await a.waitFor(
       "A notified and viewing B",
       (s) => s.notices.includes("notice-taken-over") && s.videoPlaying,
@@ -584,45 +633,45 @@ const main = async () => {
     assert.match(sa.noticeText[0], /Bob/);
     assert.equal(sa.captureLive, false);
     await a.shot("5-taken-over-notice-en");
-    assert.deepEqual(sa.toolbar, ["present-button", "menu-button", "chat-button", "call-join-button"]);
+    assert.deepEqual(sa.toolbar, ["present", "call-join", "chat-toggle", "menu-open"]);
   });
 
   await step("browser 'Stop sharing' (track ended) stops presenting", async () => {
     await b.eval(`window.__captures.at(-1).getVideoTracks()[0].dispatchEvent(new Event("ended"))`);
     await b.waitFor(
       "B stopped",
-      (s) => !s.videoLocal && s.toolbar.includes("present-button") && s.status === "status-waiting",
+      (s) => !s.videoLocal && s.toolbar.includes("present") && s.status === "status-waiting",
     );
     await b.shot("6-waiting-ja");
     await a.waitFor("A waiting", (s) => s.status === "status-waiting");
   });
 
   await step("stop button stops presenting", async () => {
-    await a.click("#present-button");
+    await a.click(tid("present"));
     const s = await a.waitFor("dialog with stored name", (s) => s.dialogOpen);
     assert.equal(s.nameValue, "Alice", "name remembered");
     assert.equal(s.replaceOptions, null);
     await a.submitDialog("Alice");
     await b.waitFor("B viewing A", (s) => s.videoPlaying);
-    await a.click("#stop-button");
+    await a.click(tid("stop"));
     await a.waitFor("A stopped", (s) => !s.videoLocal && s.status === "status-waiting");
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
   await step("denied capture shows a dismissible notice and changes nothing", async () => {
     await a.eval("window.__denyCapture = true");
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     const s = await a.waitFor("notice", (s) => s.notices.includes("notice-access-denied"));
     assert.equal(s.videoLocal, false);
-    await a.click("#notice-access-denied .notice-close");
+    await a.closeNotice("notice-access-denied");
     await a.waitFor("notice closed", (s) => s.notices.length === 0);
     await a.eval("window.__denyCapture = false");
   });
 
   await step("presenter reloads and resumes from the dialog", async () => {
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     await b.waitFor("B viewing A", (s) => s.videoPlaying);
@@ -674,10 +723,11 @@ const main = async () => {
   });
 
   await step("takeover while the presenter is reloading closes their resume dialog", async () => {
+    await a.closeMenu();
     await a.reload();
     await a.waitFor("resume dialog", (s) => s.dialogOpen && s.dialogMode === "resume");
     await b.waitFor("B sees resuming", (s) => s.status === "status-presenter-resuming");
-    await b.click("#present-button");
+    await b.click(tid("present"));
     const sb = await b.waitFor("B dialog", (s) => s.dialogOpen);
     assert.deepEqual(sb.replaceOptions, [{ name: "Alice", checked: true }]);
     await b.submitDialog("Bob");
@@ -693,16 +743,16 @@ const main = async () => {
   await step("cancelling the resume dialog frees the seat", async () => {
     await b.reload();
     await b.waitFor("resume dialog", (s) => s.dialogOpen && s.dialogMode === "resume");
-    await b.click("#present-cancel");
+    await b.click(tid("present-cancel"));
     await a.waitFor("A waiting", (s) => s.status === "status-waiting");
     const s = await b.state();
     assert.equal(s.status, "status-waiting");
-    assert.deepEqual(s.toolbar, ["present-button", "menu-button", "chat-button", "call-join-button"]);
+    assert.deepEqual(s.toolbar, ["present", "call-join", "chat-toggle", "menu-open"]);
   });
 
   await step("duplicated presenter tab: the seat moves to the duplicate, the original stops", async () => {
-    await a.eval(`document.querySelectorAll(".notice:not(.hidden) .notice-close").forEach((b) => b.click())`);
-    await a.click("#present-button");
+    await a.eval(`document.querySelectorAll(".mantine-Notification-closeButton").forEach((b) => b.click())`);
+    await a.click(tid("present"));
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     await a.waitFor("A presenting", (s) => s.videoLocal && s.captureLive);
@@ -770,8 +820,8 @@ const main = async () => {
         if (Date.now() > end) throw new Error("A did not reconnect");
         await sleep(100);
       }
-      await a.waitFor("A reconnected", (s) => s.toolbar.includes("present-button"), 15000);
-      await a.click("#present-button");
+      await a.waitFor("A reconnected", (s) => s.toolbar.includes("present"), 15000);
+      await a.click(tid("present"));
       await a.waitFor("A dialog", (s) => s.dialogOpen);
       await a.submitDialog("Alice");
       await a.waitFor("A presenting", (s) => s.videoLocal && s.captureLive);
@@ -802,7 +852,7 @@ const main = async () => {
     `window.__pcs.filter((pc) => pc.connectionState !== "closed").flatMap((pc) => pc.getSenders()).filter((s) => s.track?.kind === ${JSON.stringify(kind)})`;
   const switchTo = async (page, capture) => {
     await page.eval(`window.__nextCapture = ${JSON.stringify(capture)}`);
-    await page.click("#switch-button");
+    await page.click(tid("switch"));
   };
   let c;
   let d;
@@ -817,28 +867,28 @@ const main = async () => {
     assert.equal(await b.eval("window.__roomState.presenters[0].streamId"), streamId);
     assert.equal(await a.eval(`window.__captures[${oldTrack}].getVideoTracks()[0].readyState`), "ended");
     const sa = await a.waitFor("A shows the new capture", (s) => s.videoLocal && s.captureLive);
-    assert.ok(sa.toolbar.includes("switch-button"));
+    assert.ok(sa.toolbar.includes("switch"));
   });
 
   await step("a cancelled switch keeps the current screen", async () => {
     await a.eval("window.__denyCapture = true");
-    await a.click("#switch-button");
+    await a.click(tid("switch"));
     await sleep(500);
     await a.eval("window.__denyCapture = false");
     const sa = await a.state();
     assert.ok(sa.videoLocal && sa.captureLive);
     assert.equal(sa.notices.length, 0);
-    assert.equal(await a.eval(`document.getElementById("switch-button").disabled`), false);
+    assert.equal(await a.eval(`$t("switch").disabled`), false);
     await waitColor(b, "B still sees red", isRed);
   });
 
   await step("hiding the screen: black and silent for the viewers and in the presenter's preview", async () => {
-    await a.click("#hide-button");
+    await a.click(tid("hide"));
     const sb = await b.waitFor("B sees hidden", (s) => s.status === "status-presenter-hidden");
     assert.equal(sb.statusText, "Aliceさんが画面を一時的に隠しています。");
     await waitColor(b, "B sees black", isBlack);
     const sa = await a.waitFor("A sees self hidden", (s) => s.status === "status-self-hidden");
-    assert.ok(sa.toolbar.includes("show-button") && !sa.toolbar.includes("hide-button"));
+    assert.ok(sa.toolbar.includes("show") && !sa.toolbar.includes("hide"));
     await waitColor(a, "A's preview is black too", isBlack);
     assert.equal(await a.eval(`${openSenders("video")}.every((s) => !s.track.enabled)`), true);
     await b.shot("13-presenter-hidden-ja");
@@ -868,13 +918,17 @@ const main = async () => {
   });
 
   await step("showing the screen again, now with audio that the first screen did not have", async () => {
-    await a.click("#show-button");
+    await a.click(tid("show"));
     await waitColor(b, "B sees blue", (c) => isBlue(c) && c.width === 640 && c.height === 480);
     await waitColor(c, "C sees blue", isBlue);
     await b.waitFor("B status cleared", (s) => s.status == null);
-    await a.waitFor("A status cleared", (s) => s.status == null && s.toolbar.includes("hide-button"));
+    await a.waitFor("A status cleared", (s) => s.status == null && s.toolbar.includes("hide"));
     const end = Date.now() + 10000;
-    while (!(await b.eval(`document.querySelector("#stage video").srcObject?.getAudioTracks()[0]?.muted === false`))) {
+    while (
+      !(await b.eval(
+        `document.querySelector('[data-testid="tile"] video').srcObject?.getAudioTracks()[0]?.muted === false`,
+      ))
+    ) {
       if (Date.now() > end) throw new Error("B gets no audio");
       await sleep(200);
     }
@@ -886,7 +940,7 @@ const main = async () => {
   });
 
   await step("a hidden screen stays hidden after an automatic resume", async () => {
-    await a.click("#hide-button");
+    await a.click(tid("hide"));
     await b.waitFor("B sees hidden", (s) => s.status === "status-presenter-hidden");
     const streamId = await b.eval("window.__roomState.presenters[0].streamId");
     await a.eval("window.__sockets.at(-1).close()");
@@ -902,7 +956,7 @@ const main = async () => {
     await b.waitFor("B sees hidden again", (s) => s.status === "status-presenter-hidden", 15000);
     await waitColor(b, "B sees black", isBlack, 15000);
     await a.waitFor("A still hidden", (s) => s.status === "status-self-hidden" && s.captureLive);
-    await a.click("#show-button");
+    await a.click(tid("show"));
     await waitColor(b, "B sees blue again", isBlue);
   });
 
@@ -932,7 +986,7 @@ const main = async () => {
     }
     // Forget the rejected capture, so that the page state looks at the current one again
     await a.eval("window.__captures.pop()");
-    await a.click("#notice-switch-failed .notice-close");
+    await a.closeNotice("notice-switch-failed");
   });
 
   await step("a viewer who joins during a switch gets the new screen", async () => {
@@ -942,7 +996,7 @@ const main = async () => {
     })()`);
     const pcs = await a.eval("window.__pcs.length");
     await switchTo(a, { width: 1280, height: 720, color: "rgb(255, 255, 0)" });
-    assert.equal(await a.eval(`document.getElementById("switch-button").disabled`), true);
+    assert.equal(await a.eval(`$t("switch").disabled`), true);
     d = await newPage(cdp, "D");
     await d.goto(`${ORIGIN}/${room}`);
     const end = Date.now() + 15000;
@@ -957,13 +1011,13 @@ const main = async () => {
     // D's connection is new, so it may still be ramping up its resolution
     await waitColor(d, "D sees yellow", isYellow, 15000);
     assert.equal(await a.eval(`${openSenders("video")}.length`), 3, "one video sender per viewer");
-    await a.waitFor("switch button enabled", (s) => s.toolbar.includes("switch-button"));
-    assert.equal(await a.eval(`document.getElementById("switch-button").disabled`), false);
+    await a.waitFor("switch button enabled", (s) => s.toolbar.includes("switch"));
+    assert.equal(await a.eval(`$t("switch").disabled`), false);
   });
 
   await step("'Stop sharing' on a switched screen stops presenting", async () => {
     await a.eval(`window.__captures.at(-1).getVideoTracks()[0].dispatchEvent(new Event("ended"))`);
-    await a.waitFor("A stopped", (s) => !s.toolbar.includes("stop-button") && s.toolbar.includes("present-button"));
+    await a.waitFor("A stopped", (s) => !s.toolbar.includes("stop") && s.toolbar.includes("present"));
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
     for (const page of [c, d]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
@@ -972,18 +1026,25 @@ const main = async () => {
 
   // --- Menu and quality settings ---
 
-  const MENU_VALUES = `({
-    frameRate: document.getElementById("quality-frame-rate").value,
-    resolution: document.getElementById("quality-resolution").value,
-    bitrate: document.getElementById("quality-bitrate").value,
-    degradation: document.getElementById("quality-degradation").value,
-  })`;
-  const setInput = (page, id, value) =>
-    page.eval(`(() => {
-      const element = document.getElementById(${JSON.stringify(id)});
-      element.value = ${JSON.stringify(value)};
-      element.dispatchEvent(new Event("change"));
-    })()`);
+  // The quality settings as the menu shows them. The menu opens for it and closes again.
+  const menuValues = async (page) => {
+    await page.openMenu();
+    const values = await page.eval(`({
+      frameRate: $t("quality-frame-rate").value,
+      resolution: $t("quality-resolution").value,
+      bitrate: $t("quality-bitrate").value,
+      degradation: $t("quality-degradation").value,
+    })`);
+    await page.closeMenu();
+    return values;
+  };
+  // Changes an input of the menu, like a person who then leaves it
+  const setInput = async (page, id, value) => {
+    await page.openMenu();
+    await page.type(tid(id), value, { blur: true });
+    await sleep(100);
+    await page.closeMenu();
+  };
   const videoParameters = `${openSenders("video")}.map((s) => {
     const p = s.getParameters();
     return { ...p.encodings[0], degradationPreference: p.degradationPreference, contentHint: s.track.contentHint };
@@ -1001,17 +1062,16 @@ const main = async () => {
 
   await step("the menu opens and shows the default quality settings", async () => {
     const sa = await a.state();
-    assert.ok(sa.toolbar.includes("menu-button"));
-    await a.click("#menu-button");
-    assert.equal(await a.eval(`document.getElementById("menu").matches(":popover-open")`), true);
-    assert.deepEqual(await a.eval(MENU_VALUES), {
+    assert.ok(sa.toolbar.includes("menu-open"));
+    await a.openMenu();
+    await a.shot("15-menu-en");
+    await a.closeMenu();
+    assert.deepEqual(await menuValues(a), {
       frameRate: "30",
       resolution: "",
       bitrate: "100",
       degradation: "maintain-resolution",
     });
-    await a.shot("15-menu-en");
-    await a.eval(`document.getElementById("menu").hidePopover()`);
   });
 
   await step("quality settings chosen before presenting apply when presenting", async () => {
@@ -1026,7 +1086,7 @@ const main = async () => {
       degradation: "maintain-framerate",
     });
 
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.eval("window.__nextCapture = { width: 1920, height: 1080, frameRate: 60 }");
     await a.submitDialog("Alice");
@@ -1086,7 +1146,7 @@ const main = async () => {
   await step("an invalid value is not applied and the input goes back", async () => {
     await setInput(a, "quality-frame-rate", "0");
     await setInput(a, "quality-bitrate", "1000");
-    assert.deepEqual(await a.eval(MENU_VALUES), {
+    assert.deepEqual(await menuValues(a), {
       frameRate: "30",
       resolution: "360",
       bitrate: "2",
@@ -1101,7 +1161,7 @@ const main = async () => {
   await step("the browser remembers the settings, and invalid stored values fall back to the defaults", async () => {
     const a3 = await newPageInContext(cdp, "A3", a.browserContextId);
     await a3.goto(`${ORIGIN}/${room}`);
-    assert.deepEqual(await a3.eval(MENU_VALUES), {
+    assert.deepEqual(await menuValues(a3), {
       frameRate: "30",
       resolution: "360",
       bitrate: "2",
@@ -1111,7 +1171,7 @@ const main = async () => {
       `localStorage.setItem("screensy.quality", JSON.stringify({ frameRate: 45, maxHeight: 720, degradation: "fast" }))`,
     );
     await a3.reload();
-    assert.deepEqual(await a3.eval(MENU_VALUES), {
+    assert.deepEqual(await menuValues(a3), {
       frameRate: "30",
       resolution: "720",
       bitrate: "100",
@@ -1121,9 +1181,9 @@ const main = async () => {
     for (const stored of ["{broken", "null", "[60]", "42"]) {
       await a3.eval(`localStorage.setItem("screensy.quality", ${JSON.stringify(stored)})`);
       await a3.reload();
-      await a3.waitFor(`A3 joined with ${stored}`, (s) => s.toolbar.includes("menu-button"));
+      await a3.waitFor(`A3 joined with ${stored}`, (s) => s.toolbar.includes("menu-open"));
       assert.deepEqual(
-        await a3.eval(MENU_VALUES),
+        await menuValues(a3),
         { frameRate: "30", resolution: "", bitrate: "100", degradation: "maintain-resolution" },
         `stored ${stored}`,
       );
@@ -1131,90 +1191,97 @@ const main = async () => {
     for (const page of [a3, c]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
-    await a.click("#stop-button");
+    await a.click(tid("stop"));
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
   // --- Menu: link, name, participants ---
 
-  const isShown = (id) => `!document.getElementById(${JSON.stringify(id)}).classList.contains("hidden")`;
+  const isShown = (id) => `$t(${JSON.stringify(id)}) != null`;
+  // The participants in the menu, which has to be open
   const PARTICIPANTS = `({
-    count: document.querySelector("#menu-participants .count-slot").textContent,
-    list: [...document.querySelectorAll("#participant-list li")].map((li) => ({
-      name: li.querySelector(".participant-name").textContent,
-      badges: [...li.querySelectorAll(".badge")].map((badge) => badge.textContent),
+    count: $t("menu-participants").querySelector("h3").textContent.match(/\\d+/)[0],
+    list: $$t("participant").map((row) => ({
+      name: row.querySelector('[data-testid="participant-name"]').textContent,
+      badges: [...row.querySelectorAll(".mantine-Badge-root")].map((badge) => badge.textContent),
     })),
   })`;
   let e;
 
   await step("everyone gets the menu; without screen sharing, it has no quality section", async () => {
-    assert.ok((await b.state()).toolbar.includes("menu-button"));
+    assert.ok((await b.state()).toolbar.includes("menu-open"));
+    await b.openMenu();
     assert.equal(await b.eval(isShown("menu-quality")), true);
+    await b.closeMenu();
     e = await newPage(cdp, "E", {
       initExtra: "delete navigator.mediaDevices.getDisplayMedia; delete MediaDevices.prototype.getDisplayMedia;",
     });
     await e.goto(`${ORIGIN}/${room}`);
     const se = await e.waitFor("E joined", (s) => s.status === "status-waiting");
-    assert.deepEqual(se.toolbar, ["menu-button", "chat-button", "call-join-button"]);
+    assert.deepEqual(se.toolbar, ["call-join", "chat-toggle", "menu-open"]);
+    await e.openMenu();
     assert.equal(await e.eval(isShown("menu-quality")), false);
+    await e.closeMenu();
   });
 
   await step("the link of the room can be copied", async () => {
-    assert.equal(await b.eval(`document.getElementById("room-link").value === location.href`), true);
+    await b.openMenu();
+    assert.equal(await b.eval(`$t("room-link").value === location.href`), true);
     await cdp.send("Browser.grantPermissions", {
       origin: ORIGIN,
       browserContextId: b.browserContextId,
       permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
     });
     await b.send("Emulation.setFocusEmulationEnabled", { enabled: true });
-    await b.click("#menu-button");
-    await b.click("#copy-link-button");
-    await waitEval(b, "copied", isShown("copy-link-done"), (shown) => shown === true);
+    await b.click(tid("copy-link"));
+    await waitEval(b, "copied", isShown("copy-copied"), (shown) => shown === true);
     assert.equal(await b.eval("navigator.clipboard.readText().then((text) => text === location.href)"), true);
     await b.shot("16-menu-ja");
 
     // Without the clipboard, the link is selected for copying by hand
     await b.eval(`navigator.clipboard.writeText = () => Promise.reject(new Error("blocked"))`);
-    await b.click("#copy-link-button");
-    await waitEval(b, "copy failed", isShown("copy-link-failed"), (shown) => shown === true);
-    assert.equal(await b.eval(isShown("copy-link-done")), false);
+    await b.click(tid("copy-link"));
+    await waitEval(b, "copy failed", isShown("copy-failed"), (shown) => shown === true);
+    assert.equal(await b.eval(isShown("copy-copied")), false);
     assert.equal(
       await b.eval(`(() => {
-        const input = document.getElementById("room-link");
+        const input = $t("room-link");
         return document.activeElement === input && input.selectionStart === 0 && input.selectionEnd === input.value.length;
       })()`),
       true,
     );
-    await b.eval(`document.getElementById("menu").hidePopover()`);
+    await b.closeMenu();
   });
 
   await step("a viewer sets their name in the menu; everyone sees it, and the browser remembers it", async () => {
     await setInput(b, "menu-name-input", "  Bobby  ");
+    await a.openMenu();
     await waitEval(a, "Bobby in A's list", PARTICIPANTS, (p) => p.list.some((entry) => entry.name === "Bobby"));
-    await waitEval(
-      b,
-      "the trimmed name in B's input",
-      `document.getElementById("menu-name-input").value`,
-      (v) => v === "Bobby",
-    );
+    await b.openMenu();
+    await waitEval(b, "the trimmed name in B's input", `$t("menu-name-input").value`, (v) => v === "Bobby");
     assert.equal(await b.eval(`localStorage.getItem("screensy.name")`), "Bobby");
 
     await b.reload();
     await waitEval(a, "Bobby after B's reload", PARTICIPANTS, (p) => p.list.some((entry) => entry.name === "Bobby"));
-    assert.equal(await b.eval(`document.getElementById("menu-name-input").value`), "Bobby");
-    await b.click("#present-button");
+    await b.openMenu();
+    assert.equal(await b.eval(`$t("menu-name-input").value`), "Bobby");
+    await b.closeMenu();
+    await a.closeMenu();
+    await b.click(tid("present"));
     const sb = await b.waitFor("B dialog", (s) => s.dialogOpen);
     assert.equal(sb.nameValue, "Bobby");
-    await b.click("#present-cancel");
+    await b.click(tid("present-cancel"));
   });
 
   await step("the participant list shows who presents, who you are, and who is reconnecting", async () => {
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     await a.waitFor("A presenting", (s) => s.videoLocal);
     // E has no name: a guest numbered by its participant ID
     const guestId = await b.eval(`window.__roomState.participants.find((p) => p.name === "").id`);
+    await a.openMenu();
+    await b.openMenu();
     const expected = {
       count: "3",
       list: [
@@ -1230,36 +1297,32 @@ const main = async () => {
     await a.reload();
     await a.waitFor("resume dialog", (s) => s.dialogOpen && s.dialogMode === "resume");
     await waitEval(b, "Alice reconnecting", PARTICIPANTS, (p) => p.list[0]?.badges[0] === "再接続待ち");
-    await a.click("#present-cancel");
+    await a.click(tid("present-cancel"));
     await waitEval(b, "Alice viewing", PARTICIPANTS, (p) => p.list.every((entry) => !entry.badges.includes("配信中")));
     await cdp.send("Target.closeTarget", { targetId: e.targetId });
     await waitEval(b, "two left", PARTICIPANTS, (p) => p.count === "2");
+    await b.closeMenu();
   });
 
   // --- Menu: connection statistics ---
 
+  // The statistics in the menu, which has to be open
   const STATS = `({
-    empty: !document.getElementById("stats-empty").classList.contains("hidden"),
-    entries: [...document.querySelectorAll("#stats-list .stats-entry")].map((entry) => ({
-      name: entry.querySelector(".stats-name").textContent,
-      fields: Object.fromEntries(
-        [...entry.querySelectorAll("dd[data-field]")]
-          .filter((dd) => !dd.classList.contains("hidden"))
-          .map((dd) => [dd.dataset.field, dd.textContent]),
-      ),
+    empty: $t("stats-empty") != null,
+    entries: $$t("stats-entry").map((entry) => ({
+      name: entry.querySelector('[data-testid="stats-name"]').textContent,
+      fields: Object.fromEntries([...entry.querySelectorAll("td[data-field]")].map((td) => [td.dataset.field, td.textContent])),
     })),
   })`;
-  const openMenu = (page) => page.eval(`document.getElementById("menu").showPopover()`);
-  const closeMenu = (page) => page.eval(`document.getElementById("menu").hidePopover()`);
   const filled = (fields) => fields.bitrate !== "—" && fields.roundTripTime !== "—" && fields.resolution !== "—";
 
   await step("a viewer sees the statistics of the stream they receive", async () => {
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     await a.waitFor("A presenting", (s) => s.videoLocal);
     await b.waitFor("B viewing", (s) => s.videoPlaying, 15000);
-    await openMenu(b);
+    await b.openMenu();
     const stats = await waitEval(
       b,
       "B's statistics",
@@ -1285,7 +1348,7 @@ const main = async () => {
   });
 
   await step("the presenter sees the statistics per viewer, which follow the viewers", async () => {
-    await openMenu(a);
+    await a.openMenu();
     const stats = await waitEval(
       a,
       "A's statistics",
@@ -1316,24 +1379,24 @@ const main = async () => {
   });
 
   await step("the statistics are only collected while the menu is open", async () => {
-    await closeMenu(a);
-    await closeMenu(b);
+    await a.closeMenu();
+    await b.closeMenu();
     await sleep(300);
     const before = [await a.eval("window.__getStatsCalls"), await b.eval("window.__getStatsCalls")];
     await sleep(2500);
     const after = [await a.eval("window.__getStatsCalls"), await b.eval("window.__getStatsCalls")];
     assert.deepEqual(after, before);
-    await openMenu(b);
+    await b.openMenu();
     await sleep(2500);
     assert.ok((await b.eval("window.__getStatsCalls")) >= before[1] + 2, "collects again when opened");
   });
 
   await step("without a stream, the menu says that there are no statistics", async () => {
-    await a.click("#stop-button");
+    await a.click(tid("stop"));
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
     const stats = await waitEval(b, "no statistics", STATS, (s) => s.empty && s.entries.length === 0);
     assert.equal(stats.entries.length, 0);
-    await closeMenu(b);
+    await b.closeMenu();
   });
 
   // --- Blur ---
@@ -1341,8 +1404,8 @@ const main = async () => {
   // The average difference between horizontal neighbors, drawn at 320x180: about 30 for the checkerboard, near 0 when
   // blurred
   const VIDEO_EDGES = `(() => {
-    const video = document.querySelector("#stage video");
-    if (video.videoWidth === 0) return null;
+    const video = document.querySelector('[data-testid="tile"] video');
+    if (video == null || video.videoWidth === 0) return null;
     const canvas = document.createElement("canvas");
     canvas.width = 320;
     canvas.height = 180;
@@ -1373,23 +1436,23 @@ const main = async () => {
 
   await step("blurring the screen: blurry for the viewers and in the preview, on the same connections", async () => {
     await a.eval(`window.__nextCapture = ${JSON.stringify(CHECKER)}`);
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
-    await a.waitFor("A presenting", (s) => s.videoLocal && s.toolbar.includes("blur-button"));
+    await a.waitFor("A presenting", (s) => s.videoLocal && s.toolbar.includes("blur"));
     const sharp = await waitEval(b, "B sees the sharp checkerboard", VIDEO_EDGES, isSharp, 15000);
     console.log(`     sharp: ${JSON.stringify(sharp)}`);
     const pcs = await b.eval("window.__pcs.length");
     const streamId = await b.eval("window.__roomState.presenters[0].streamId");
 
     const started = Date.now();
-    await a.click("#blur-button");
+    await a.click(tid("blur"));
     const blurry = await waitEval(b, "B sees it blurred", VIDEO_EDGES, isBlurry, 10000);
     console.log(`     blurred after ${Date.now() - started} ms: ${JSON.stringify(blurry)}`);
     assert.equal(blurry.width, 160, "sent at a quarter of the size");
     await waitEval(a, "A's preview is blurred too", VIDEO_EDGES, isBlurry);
     const sa = await a.state();
-    assert.ok(sa.toolbar.includes("unblur-button") && !sa.toolbar.includes("blur-button"));
+    assert.ok(sa.toolbar.includes("unblur") && !sa.toolbar.includes("blur"));
     assert.equal(await b.eval("window.__pcs.length"), pcs, "no new connection");
     assert.equal(await b.eval("window.__roomState.presenters[0].streamId"), streamId);
     await a.shot("19-blurred-en");
@@ -1401,18 +1464,24 @@ const main = async () => {
   });
 
   await step("unblurring brings the sharp screen back", async () => {
-    await a.click("#unblur-button");
+    await a.click(tid("unblur"));
     await waitEval(b, "B sees it sharp", VIDEO_EDGES, isSharp, 10000);
-    await a.waitFor("blur button back", (s) => s.toolbar.includes("blur-button"));
+    await a.waitFor("blur button back", (s) => s.toolbar.includes("blur"));
   });
 
   await step("the strength slider changes the blur while blurred, but not the sent size", async () => {
-    const sliderShown = `!document.getElementById("blur-strength-control").classList.contains("hidden")`;
+    const sliderShown = `$t("blur-strength") != null`;
+    // With the keys of the slider: Home goes to the minimum, and each ArrowRight adds a step of 1. The slider counts
+    // from the value of its last render, so each key waits for the next one.
     const setStrength = (value) =>
-      a.eval(`(() => {
-        const input = document.getElementById("blur-strength");
-        input.value = "${value}";
-        input.dispatchEvent(new Event("input"));
+      a.eval(`(async () => {
+        const thumb = () => $t("blur-strength").querySelector('[role="slider"]');
+        const press = async (key) => {
+          thumb().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        };
+        await press("Home");
+        for (let strength = 4; strength < ${value}; strength++) await press("ArrowRight");
       })()`);
     assert.equal(await a.eval(sliderShown), false, "no slider while sharp");
     // Squares of 64 px: a light blur still shows them, a strong one melts them
@@ -1424,11 +1493,15 @@ const main = async () => {
       (v) => v != null && v.width === 640 && v.edges > 5,
       10000,
     );
-    await a.click("#blur-button");
+    await a.click(tid("blur"));
     await waitEval(b, "B gets the blurred size", VIDEO_EDGES, (v) => v != null && v.width === 160, 10000);
     assert.equal(await a.eval(sliderShown), true);
-    const shownStrength = `document.getElementById("blur-strength-value").value`;
-    assert.equal(await a.eval(`document.getElementById("blur-strength").value`), "24", "the default strength");
+    const shownStrength = `$t("blur-strength-value").textContent`;
+    assert.equal(
+      await a.eval(`$t("blur-strength").querySelector('[role="slider"]').getAttribute("aria-valuenow")`),
+      "24",
+      "the default strength",
+    );
     assert.equal(await a.eval(shownStrength), "24", "the value is shown next to the slider");
 
     await setStrength(64);
@@ -1451,8 +1524,8 @@ const main = async () => {
     assert.equal(await a.eval(`localStorage.getItem("screensy.blur")`), "4");
 
     await setStrength(24);
-    await a.click("#unblur-button");
-    await a.waitFor("unblurred", (s) => s.toolbar.includes("blur-button"));
+    await a.click(tid("unblur"));
+    await a.waitFor("unblurred", (s) => s.toolbar.includes("blur"));
     assert.equal(await a.eval(sliderShown), false, "the slider goes with the blur");
     // Back to the small squares for the next scenarios
     await switchTo(a, CHECKER);
@@ -1460,7 +1533,7 @@ const main = async () => {
   });
 
   await step("a switch while blurred only ever sends the blurred video", async () => {
-    await a.click("#blur-button");
+    await a.click(tid("blur"));
     await waitEval(b, "B sees it blurred", VIDEO_EDGES, isBlurry, 10000);
     await a.eval("window.__replaced = []");
     await switchTo(a, { width: 800, height: 600, pattern: "checker" });
@@ -1477,16 +1550,16 @@ const main = async () => {
   });
 
   await step("hiding wins over the blur, and unblurring while hidden shows nothing", async () => {
-    await a.click("#hide-button");
+    await a.click(tid("hide"));
     await waitColor(b, "B sees black", isBlack);
     await a.eval("window.__replaced = []");
-    await a.click("#unblur-button");
-    await a.waitFor("A unblurred", (s) => s.toolbar.includes("blur-button"));
+    await a.click(tid("unblur"));
+    await a.waitFor("A unblurred", (s) => s.toolbar.includes("blur"));
     const video = await a.eval(`window.__replaced.filter((r) => r.kind === "video")`);
     assert.ok(video.length > 0 && video.every((r) => r.enabled === false), JSON.stringify(video));
     await sleep(1000);
     await waitColor(b, "B still sees black", isBlack);
-    await a.click("#show-button");
+    await a.click(tid("show"));
     await waitEval(b, "B sees the sharp screen", VIDEO_EDGES, isSharp, 10000);
   });
 
@@ -1496,17 +1569,17 @@ const main = async () => {
         if (track != null && track.constructor.name === "MediaStreamTrackGenerator") throw new Error("injected failure");
       };
     })()`);
-    await a.click("#blur-button");
+    await a.click(tid("blur"));
     const sa = await a.waitFor("A notified", (s) => s.notices.includes("notice-blur-failed"));
     await a.eval("window.__replaceHook = null");
-    assert.ok(sa.toolbar.includes("blur-button"), "still not blurred");
+    assert.ok(sa.toolbar.includes("blur"), "still not blurred");
     await sleep(1000);
     assert.ok(isSharp(await b.eval(VIDEO_EDGES)), "B still sees the sharp screen");
-    await a.click("#notice-blur-failed .notice-close");
+    await a.closeNotice("notice-blur-failed");
   });
 
   await step("a blurred screen stays blurred after an automatic resume", async () => {
-    await a.click("#blur-button");
+    await a.click(tid("blur"));
     await waitEval(b, "B sees it blurred", VIDEO_EDGES, isBlurry, 10000);
     const streamId = await b.eval("window.__roomState.presenters[0].streamId");
     await a.eval("window.__sockets.at(-1).close()");
@@ -1521,8 +1594,8 @@ const main = async () => {
     }
     await b.waitFor("B viewing again", (s) => s.videoPlaying, 15000);
     await waitEval(b, "B sees it blurred again", VIDEO_EDGES, isBlurry, 10000);
-    await a.click("#unblur-button");
-    await a.click("#stop-button");
+    await a.click(tid("unblur"));
+    await a.click(tid("stop"));
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
@@ -1531,8 +1604,8 @@ const main = async () => {
     await f.goto(`${ORIGIN}/`);
     await f.waitFor("F dialog", (s) => s.dialogOpen);
     await f.submitDialog("Frank");
-    const sf = await f.waitFor("F presenting", (s) => s.videoLocal && s.toolbar.includes("hide-button"));
-    assert.ok(!sf.toolbar.includes("blur-button") && !sf.toolbar.includes("unblur-button"));
+    const sf = await f.waitFor("F presenting", (s) => s.videoLocal && s.toolbar.includes("hide"));
+    assert.ok(!sf.toolbar.includes("blur") && !sf.toolbar.includes("unblur"));
     await cdp.send("Target.closeTarget", { targetId: f.targetId });
   });
 
@@ -1540,11 +1613,11 @@ const main = async () => {
     const g = await newPage(cdp, "G");
     await g.goto(`${ORIGIN}/${room}`);
     await g.waitFor("G joined", (s) => s.status === "status-waiting");
-    await g.click("#present-button");
+    await g.click(tid("present"));
     const sg = await g.waitFor("G dialog", (s) => s.dialogOpen);
     assert.equal(sg.replaceOptions, null, "nobody presents yet");
 
-    await a.click("#present-button");
+    await a.click(tid("present"));
     await a.waitFor("A dialog", (s) => s.dialogOpen);
     await a.submitDialog("Alice");
     await a.waitFor("A presenting", (s) => s.videoLocal);
@@ -1552,11 +1625,11 @@ const main = async () => {
     await g.submitDialog("Gina");
     const sg2 = await g.waitFor("G notified", (s) => s.notices.includes("notice-full"));
     assert.equal(sg2.noticeText[0], "The room is full of presenters now. Try again.");
-    assert.ok(!sg2.toolbar.includes("stop-button") && !sg2.captureLive);
+    assert.ok(!sg2.toolbar.includes("stop") && !sg2.captureLive);
     assert.ok((await a.state()).videoLocal, "A still presents");
     await b.waitFor("B viewing A", (s) => s.videoPlaying, 15000);
     await cdp.send("Target.closeTarget", { targetId: g.targetId });
-    await a.click("#stop-button");
+    await a.click(tid("stop"));
     await b.waitFor("B waiting", (s) => s.status === "status-waiting");
   });
 
@@ -1564,7 +1637,7 @@ const main = async () => {
 
   const inTile = (name, expression) =>
     `(() => {
-      const tile = [...document.querySelectorAll("#stage .tile")].find((t) => t.querySelector(".tile-name").textContent === ${JSON.stringify(name)});
+      const tile = $$t("tile").find((t) => t.querySelector('[data-testid="tile-name"]').textContent === ${JSON.stringify(name)});
       if (tile == null) return null;
       const video = tile.querySelector("video");
       return ${expression};
@@ -1599,13 +1672,10 @@ const main = async () => {
     throw new Error(`${page.label}: timeout waiting for ${name}'s color\nlast: ${JSON.stringify(last)}`);
   };
   const clickTile = (page, name, selector) =>
-    page.eval(
-      inTile(name, selector == null ? "tile.click()" : `tile.querySelector(${JSON.stringify(selector)}).click()`),
-      true,
-    );
+    page.eval(inTile(name, `tile.querySelector(${JSON.stringify(tid(selector ?? "tile-spotlight"))}).click()`), true);
   const presentAs = async (page, name, capture) => {
     await page.eval(`window.__nextCapture = ${JSON.stringify(capture)}`);
-    await page.click("#present-button");
+    await page.click(tid("present"));
     const s = await page.waitFor(`${page.label} dialog`, (s) => s.dialogOpen);
     await page.submitDialog(name);
     await page.waitFor(`${page.label} presenting`, (s) => s.videoLocal);
@@ -1677,18 +1747,18 @@ const main = async () => {
   await step("clicking a tile enlarges it, and it goes back with another click or when it ends", async () => {
     await clickTile(viewer, "Pia");
     let s = await viewer.waitFor("Pia enlarged", (s) => s.tiles.find((t) => t.name === "Pia")?.spotlighted);
-    assert.equal(await viewer.eval(`document.getElementById("stage").classList.contains("spotlight")`), true);
+    assert.equal(await viewer.eval(`$t("stage").hasAttribute("data-spotlight")`), true);
     await viewer.shot("21-spotlight-ja");
     await clickTile(viewer, "Pia");
     s = await viewer.waitFor("back to even", (s) => s.tiles.every((t) => !t.spotlighted));
-    assert.equal(await viewer.eval(`document.getElementById("stage").classList.contains("spotlight")`), false);
+    assert.equal(await viewer.eval(`$t("stage").hasAttribute("data-spotlight")`), false);
 
     await clickTile(viewer, "Pablo");
     await viewer.waitFor("Pablo enlarged", (s) => s.tiles.find((t) => t.name === "Pablo")?.spotlighted);
-    await p2.click("#stop-button");
+    await p2.click(tid("stop"));
     s = await viewer.waitFor("Pablo gone", (s) => s.tiles.length === 1);
     assert.equal(s.tiles[0].spotlighted, false);
-    assert.equal(await viewer.eval(`document.getElementById("stage").classList.contains("spotlight")`), false);
+    assert.equal(await viewer.eval(`$t("stage").hasAttribute("data-spotlight")`), false);
     await presentAs(p2, "Pablo", { color: "rgb(0, 0, 255)" });
     await viewer.waitFor(
       "V sees two playing tiles",
@@ -1698,17 +1768,17 @@ const main = async () => {
   });
 
   await step("each tile has its own mute button, and the own tile stays muted", async () => {
-    await clickTile(viewer, "Pia", ".tile-mute");
+    await clickTile(viewer, "Pia", "tile-mute");
     let s = await viewer.waitFor("Pia muted", (s) => s.tiles.find((t) => t.name === "Pia")?.muted === true);
     assert.equal(s.tiles.find((t) => t.name === "Pablo").muted, false, "Pablo still plays sound");
     assert.equal(
-      await viewer.eval(inTile("Pia", `tile.querySelector(".tile-mute").getAttribute("aria-label")`)),
+      await viewer.eval(inTile("Pia", `tile.querySelector('[data-testid="tile-mute"]').getAttribute("aria-label")`)),
       "消音を解除",
     );
-    await clickTile(viewer, "Pia", ".tile-mute");
+    await clickTile(viewer, "Pia", "tile-mute");
     s = await viewer.waitFor("Pia unmuted", (s) => s.tiles.find((t) => t.name === "Pia")?.muted === false);
     assert.equal(
-      await p1.eval(`document.querySelector("#stage .tile[data-self] .tile-mute").classList.contains("hidden")`),
+      await p1.eval(`document.querySelector('[data-testid="tile"][data-self] [data-testid="tile-mute"]') == null`),
       true,
     );
   });
@@ -1736,7 +1806,7 @@ const main = async () => {
     p5 = await newPage(cdp, "P5");
     await p5.goto(`${ORIGIN}/${multiRoom}`);
     await p5.waitFor("P5 joined", (s) => s.tiles.length === 4);
-    await p5.click("#present-button");
+    await p5.click(tid("present"));
     const s5 = await p5.waitFor("P5 dialog", (s) => s.dialogOpen);
     assert.deepEqual(s5.replaceOptions, [
       { name: "Pia", checked: false },
@@ -1744,10 +1814,10 @@ const main = async () => {
       { name: "Paul", checked: false },
       { name: "Pat", checked: false },
     ]);
-    assert.match(await p5.eval(`document.querySelector("#present-replace legend").textContent`), /Up to 4 people/);
+    assert.match(await p5.eval(`$t("present-replace").textContent`), /Up to 4 people/);
     await p5.shot("23-choose-replacement-en");
     await p5.eval(
-      `[...document.querySelectorAll("#present-replace-options label")].find((l) => l.textContent.trim() === "Pablo").querySelector("input").click()`,
+      `$$t("present-replace-option").find((input) => input.closest(".mantine-Radio-root").textContent.trim() === "Pablo").click()`,
     );
     await p5.eval(`window.__nextCapture = ${JSON.stringify({ color: "rgb(255, 0, 255)" })}`);
     await p5.submitDialog("Penny");
@@ -1767,7 +1837,7 @@ const main = async () => {
       (s) => s.tiles.length === 4 && s.tiles.every((t) => t.playing && t.status == null),
       15000,
     );
-    await p3.click("#hide-button");
+    await p3.click(tid("hide"));
     const sv = await viewer.waitFor(
       "Paul hidden",
       (s) => s.tiles.find((t) => t.name === "Paul")?.status === "status-presenter-hidden",
@@ -1776,32 +1846,32 @@ const main = async () => {
       sv.tiles.filter((t) => t.status != null).map((t) => t.name),
       ["Paul"],
     );
-    await p3.click("#show-button");
+    await p3.click(tid("show"));
     await viewer.waitFor("Paul shown", (s) => s.tiles.every((t) => t.status == null));
   });
 
   await step("the statistics list every received presentation, and what a presenter sends", async () => {
-    await openMenu(viewer);
+    await viewer.openMenu();
     const stats = await waitEval(
       viewer,
       "four received",
-      `(() => [...document.querySelectorAll("#stats-list .stats-entry")].map((e) => [e.querySelector(".stats-name").textContent, e.querySelector(".stats-direction").textContent]))()`,
+      `(() => $$t("stats-entry").map((e) => [e.querySelector('[data-testid="stats-name"]').textContent, e.querySelector('[data-testid="stats-direction"]').textContent]))()`,
       (list) => list.length === 4,
     );
     assert.deepEqual(
       stats.map((entry) => entry[1]),
       ["受信", "受信", "受信", "受信"],
     );
-    await closeMenu(viewer);
-    await openMenu(p1);
+    await viewer.closeMenu();
+    await p1.openMenu();
     const own = await waitEval(
       p1,
       "sent and received",
-      `(() => [...document.querySelectorAll("#stats-list .stats-entry")].map((e) => e.querySelector(".stats-direction").textContent))()`,
+      `(() => $$t("stats-entry").map((e) => e.querySelector('[data-testid="stats-direction"]').textContent))()`,
       (list) => list.includes("sending") && list.includes("receiving"),
     );
     console.log(`     P1 statistics: ${JSON.stringify(own)}`);
-    await closeMenu(p1);
+    await p1.closeMenu();
   });
 
   await step("sharing sound that may contain this page's sound mutes the other presenters on this page", async () => {
@@ -1812,11 +1882,11 @@ const main = async () => {
     );
     assert.match(s.noticeText.join(" "), /The other presenters are muted/);
     // The person may still unmute one on purpose
-    await clickTile(p1, "Paul", ".tile-mute");
+    await clickTile(p1, "Paul", "tile-mute");
     await p1.waitFor("Paul unmuted on purpose", (s) => s.tiles.find((t) => t.name === "Paul")?.muted === false);
-    await clickTile(p1, "Paul", ".tile-mute");
+    await clickTile(p1, "Paul", "tile-mute");
 
-    await p1.click("#notice-echo-muted .notice-close");
+    await p1.closeNotice("notice-echo-muted");
     await switchTo(p1, { color: "rgb(255, 0, 0)", audio: true, surface: "browser" });
     const s2 = await p1.waitFor(
       "a tab capture does not mute",
@@ -1830,21 +1900,19 @@ const main = async () => {
 
   // --- Chat: peer to peer on the data channels of the mesh ---
 
-  const CHAT = `(() => {
-    const unread = document.getElementById("chat-unread");
-    return {
-      open: !document.getElementById("chat").classList.contains("hidden"),
-      unread: unread.classList.contains("hidden") ? 0 : Number(unread.textContent),
-      reach: document.getElementById("chat-reach").textContent,
-      enabled: !document.getElementById("chat-input").disabled,
-      input: document.getElementById("chat-input").value,
-      log: [...document.querySelectorAll("#chat-log .chat-message")].map((li) => ({
-        name: li.querySelector(".chat-name").textContent,
-        text: li.querySelector(".chat-text")?.textContent ?? "",
-        self: li.hasAttribute("data-self"),
-      })),
-    };
-  })()`;
+  // The chat panel is always on the page, also while it is closed
+  const CHAT = `(() => ({
+    open: $t("chat-toggle")?.getAttribute("aria-pressed") === "true",
+    unread: Number($t("chat-unread")?.dataset.unread ?? 0),
+    reach: $t("chat-reach").textContent,
+    enabled: !$t("chat-input").disabled,
+    input: $t("chat-input").value,
+    log: $$t("chat-message").map((message) => ({
+      name: message.querySelector('[data-testid="chat-name"]').textContent,
+      text: message.querySelector('[data-testid="chat-text"]')?.textContent ?? "",
+      self: message.hasAttribute("data-self"),
+    })),
+  }))()`;
   const waitChat = async (page, desc, pred, timeout = 10000) => {
     const end = Date.now() + timeout;
     let last;
@@ -1855,15 +1923,13 @@ const main = async () => {
     }
     throw new Error(`${page.label}: timeout waiting for ${desc}\nlast chat: ${JSON.stringify(last, null, 1)}`);
   };
-  // Types the text and presses Enter, with the given modifiers of the key event
-  const pressEnter = (page, text, init = {}) =>
-    page.eval(
-      `(() => {
-        const input = document.getElementById("chat-input");
-        input.value = ${JSON.stringify(text)};
-        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...${JSON.stringify(init)} }));
-      })()`,
+  // Types the text and presses Enter, with the given modifiers of the key event. React gets the text before the key.
+  const pressEnter = async (page, text, init = {}) => {
+    await page.type(tid("chat-input"), text);
+    await page.eval(
+      `$t("chat-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...${JSON.stringify(init)} }))`,
     );
+  };
   const texts = (chat) => chat.log.map((message) => `${message.name}: ${message.text}`);
   const withName = (name) => `try { localStorage.setItem("screensy.name", ${JSON.stringify(name)}); } catch {}`;
   const chatRoom = `${ORIGIN}/#ChatRoom${Date.now()}`;
@@ -1878,7 +1944,7 @@ const main = async () => {
     await c2.goto(chatRoom);
     await waitChat(c1, "C1 reaches C2", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
     await waitChat(c2, "C2 reaches C1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
-    await c1.click("#chat-button");
+    await c1.click(tid("chat-toggle"));
     await pressEnter(c1, "hello from Ann");
     const sent = await waitChat(c1, "C1 shows its message", (c) => c.log.length === 1);
     assert.equal(sent.input, "", "the input is cleared");
@@ -1887,7 +1953,7 @@ const main = async () => {
     assert.deepEqual(got.log, [{ name: "Ann", text: "hello from Ann", self: false }]);
     assert.equal(got.unread, 1);
     assert.equal(got.open, false);
-    await c2.click("#chat-button");
+    await c2.click(tid("chat-toggle"));
     const opened = await waitChat(c2, "C2 opened the chat", (c) => c.open);
     assert.equal(opened.unread, 0);
     await pressEnter(c2, "hi Ann\nsecond line");
@@ -1974,9 +2040,9 @@ const main = async () => {
 
   // --- Files: shared in the chat, fetched from the sender on the files channel of the mesh ---
 
-  const FILES = `(() => [...document.querySelectorAll("#chat-log .chat-file")].map((row) => ({
+  const FILES = `(() => $$t("chat-file").map((row) => ({
     id: row.dataset.fileId,
-    name: row.querySelector(".chat-file-name").textContent,
+    name: row.querySelector('[data-testid="chat-file-name"]').textContent + " (" + row.querySelector('[data-testid="chat-file-size"]').textContent + ")",
     status: row.dataset.status,
     url: row.querySelector("a")?.href ?? null,
     download: row.querySelector("a")?.download ?? null,
@@ -1998,16 +2064,16 @@ const main = async () => {
     for (let i = 0; i < size; i++) sum = (sum * 31 + fileByte(i)) >>> 0;
     return sum;
   };
-  const attach = (page, name, size, type, input = "chat-file") =>
+  const attach = (page, name, size, type, input = "chat-file-input") =>
     page.eval(
       `(() => {
         const bytes = new Uint8Array(${size});
         for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7 + (i >> 11)) & 255;
         const transfer = new DataTransfer();
         transfer.items.add(new File([bytes], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));
-        const input = document.getElementById(${JSON.stringify(input)});
+        const input = $t(${JSON.stringify(input)});
         input.files = transfer.files;
-        input.dispatchEvent(new Event("change"));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
       })()`,
     );
   const fetchedFile = (page, url) =>
@@ -2021,7 +2087,7 @@ const main = async () => {
       })()`,
     );
   const clickFile = (page, status) =>
-    page.eval(`document.querySelector('#chat-log .chat-file[data-status="${status}"] button').click()`, true);
+    page.eval(`document.querySelector('[data-testid="chat-file"][data-status="${status}"] button').click()`, true);
   const BIG = 20_000_000;
   const filesRoom = `${ORIGIN}/#FilesRoom${Date.now()}`;
   let f1;
@@ -2041,7 +2107,7 @@ const main = async () => {
     // Larger than the 16 MB that the receiver folds into a Blob at once
     await attach(f1, "data.bin", BIG, "application/octet-stream");
     const own = await waitFiles(f1, "F1 shows its file", (files) => files.length === 1);
-    assert.deepEqual(shown(own), [{ name: "📎 data.bin (20.0 MB)", status: "own", url: null, download: null }]);
+    assert.deepEqual(shown(own), [{ name: "data.bin (20.0 MB)", status: "own", url: null, download: null }]);
     await waitFiles(f2, "F2 can download it", (files) => files[0]?.status === "idle");
 
     await clickFile(f2, "idle");
@@ -2071,7 +2137,7 @@ const main = async () => {
     // looks like a PDF
     await attach(f1, "evil\u202Efdp.html", 100, "text/html");
     const files = await waitFiles(f2, "F2 sees the HTML file", (files) => files[1]?.status === "idle");
-    assert.equal(files[1].name, "📎 evilfdp.html (100 B)", "without the right-to-left override");
+    assert.equal(files[1].name, "evilfdp.html (100 B)", "without the right-to-left override");
     await clickFile(f2, "idle");
     const done = await waitFiles(f2, "F2 downloaded it", (files) => files[1]?.status === "done");
     assert.equal(done[1].download, "evilfdp.html");
@@ -2096,13 +2162,19 @@ const main = async () => {
     const f3Files = await waitFiles(f3, "F3 sees the report stopped", (files) => files[2]?.status === "stopped");
     assert.equal(f3Files[1].status, "idle", "the HTML file is still with F2");
 
-    await f1.eval(`document.querySelector('.chat-file[data-file-id="${reportId}"] button').click()`, true);
-    await attach(f1, "report.txt", 1999, "text/plain", "chat-resume-file");
+    await f1.eval(
+      `document.querySelector('[data-testid="chat-file"][data-file-id="${reportId}"] button').click()`,
+      true,
+    );
+    await attach(f1, "report.txt", 1999, "text/plain", "chat-resume-input");
     await f1.waitFor("F1 told that it is another file", (s) => s.notices.includes("notice-file-mismatch"));
-    await attach(f1, "report.txt", 2000, "text/plain", "chat-resume-file");
+    await attach(f1, "report.txt", 2000, "text/plain", "chat-resume-input");
     await waitFiles(f1, "F1 shares the report again", (files) => files[2]?.status === "own");
     await waitFiles(f2, "F2 can download the report again", (files) => files[2]?.status === "idle");
-    await f2.eval(`document.querySelector('.chat-file[data-file-id="${reportId}"] button').click()`, true);
+    await f2.eval(
+      `document.querySelector('[data-testid="chat-file"][data-file-id="${reportId}"] button').click()`,
+      true,
+    );
     const done = await waitFiles(f2, "F2 downloaded the report", (files) => files[2]?.status === "done");
     assert.equal((await fetchedFile(f2, done[2].url)).sum, checksum(2000));
   });
@@ -2130,16 +2202,17 @@ const main = async () => {
 
   // --- Voice call: one stream per participant in the call, to everyone in the room ---
 
+  // The members of the call read as the name, then 📷 for a camera and 🔇 for a muted microphone
   const CALL = `(() => {
-    const shown = (id) => !document.getElementById(id).classList.contains("hidden");
+    const shown = (id) => $t(id) != null;
     const microphone = window.__microphones.at(-1)?.getAudioTracks()[0];
     const screenAudio = window.__captures.at(-1)?.getAudioTracks()[0];
     return {
-      join: shown("call-join-button"),
-      muted: shown("call-mute-button") ? document.getElementById("call-mute-button").getAttribute("aria-pressed") === "true" : null,
-      leave: shown("call-leave-button"),
-      bar: shown("call-bar") ? [...document.querySelectorAll("#call-members li")].map((li) => li.textContent) : null,
-      audio: [...document.querySelectorAll("#call-audio audio")].map((audio) => ({
+      join: shown("call-join"),
+      muted: shown("call-mute") ? $t("call-mute").getAttribute("aria-pressed") === "true" : null,
+      leave: shown("call-leave"),
+      bar: shown("call-members") ? $$t("call-member").map((member) => member.querySelector(".mantine-Badge-label").textContent + (member.hasAttribute("data-camera") ? "📷" : "") + (member.hasAttribute("data-muted") ? "🔇" : "")) : null,
+      audio: $$t("call-audio").map((audio) => ({
         playing: !audio.paused && audio.srcObject != null && audio.srcObject.getAudioTracks().length > 0,
         muted: audio.muted,
       })),
@@ -2148,7 +2221,7 @@ const main = async () => {
       screenAudio: screenAudio == null ? null : screenAudio.enabled,
       echoChoice: shown("echo-choice"),
       calls: window.__roomState?.calls ?? [],
-      notices: [...document.querySelectorAll(".notice:not(.hidden)")].map((notice) => notice.id),
+      notices: [...document.querySelectorAll('[data-testid^="notice-"]')].map((notice) => notice.dataset.testid),
     };
   })()`;
   const waitCall = async (page, desc, pred, timeout = 10000) => {
@@ -2195,7 +2268,7 @@ const main = async () => {
     await waitCall(k2, "K2 can join", (c) => c.join);
     assert.equal(await k1.eval("window.__userMediaCalls"), 0, "no microphone before joining");
 
-    await k1.click("#call-join-button");
+    await k1.click(tid("call-join"));
     const joined = await waitCall(k1, "K1 in the call", (c) => c.leave && c.bar?.length === 1);
     assert.deepEqual(joined.bar, ["Kim"]);
     assert.equal(joined.muted, false, "not muted when joining");
@@ -2212,7 +2285,9 @@ const main = async () => {
     assert.deepEqual(heard.bar, ["Kim"]);
     assert.equal(heard.join, true, "K2 is not in the call");
     await waitAudioFlowing(k2, "audio from K1");
-    const badges = await k2.eval(`[...document.querySelectorAll("#participant-list li")].map((li) => li.textContent)`);
+    await k2.openMenu();
+    const badges = await k2.eval(`$$t("participant").map((row) => row.textContent)`);
+    await k2.closeMenu();
     assert.ok(
       badges.some((text) => text.startsWith("Kim") && text.includes("in call")),
       JSON.stringify(badges),
@@ -2220,7 +2295,7 @@ const main = async () => {
   });
 
   await step("call: a second participant hears the first, and the first hears them", async () => {
-    await k2.click("#call-join-button");
+    await k2.click(tid("call-join"));
     await waitCall(k1, "K1 plays Lee's microphone", (c) => c.audio.length === 1 && c.audio[0].playing);
     await waitAudioFlowing(k1, "audio from K2");
     const both = await waitCall(k2, "K2 in the call", (c) => c.leave && c.bar?.length === 2);
@@ -2229,11 +2304,11 @@ const main = async () => {
   });
 
   await step("call: muting sends silence and shows a mark to the others", async () => {
-    await k1.click("#call-mute-button");
+    await k1.click(tid("call-mute"));
     const muted = await waitCall(k1, "K1 muted", (c) => c.muted === true);
     assert.equal(muted.microphone, "off");
     await waitCall(k2, "K2 sees Kim muted", (c) => c.bar?.[0] === "Kim🔇");
-    await k1.click("#call-mute-button");
+    await k1.click(tid("call-mute"));
     assert.equal((await waitCall(k1, "K1 unmuted", (c) => c.muted === false)).microphone, "on");
     await waitCall(k2, "K2 sees Kim unmuted", (c) => c.bar?.[0] === "Kim");
   });
@@ -2256,7 +2331,7 @@ const main = async () => {
   });
 
   await step("call: leaving stops the microphone and its sound; a reload leaves the call", async () => {
-    await k1.click("#call-leave-button");
+    await k1.click(tid("call-leave"));
     const left = await waitCall(k1, "K1 left", (c) => c.join && c.bar?.length === 1);
     assert.equal(left.microphone, "ended");
     assert.deepEqual(left.bar, ["Lee"]);
@@ -2269,18 +2344,18 @@ const main = async () => {
 
   await step("call: a refused microphone shows a notice and does not join", async () => {
     await k1.eval("window.__denyMicrophone = true");
-    await k1.click("#call-join-button");
+    await k1.click(tid("call-join"));
     const refused = await waitCall(k1, "K1 notice", (c) => c.notices.includes("notice-microphone-denied"));
     assert.equal(refused.join, true);
     assert.equal(refused.leave, false);
     await sleep(300);
     assert.deepEqual((await k1.eval(CALL)).calls, []);
     await k1.eval("window.__denyMicrophone = false");
-    await k1.click("#notice-microphone-denied .notice-close");
+    await k1.closeNotice("notice-microphone-denied");
   });
 
   await step("call: shared sound that would carry the call back stays off until the presenter chooses", async () => {
-    await k2.click("#call-join-button");
+    await k2.click(tid("call-join"));
     await waitCall(k1, "K1 plays Lee", (c) => c.audio.length === 1 && c.audio[0].playing);
     // A screen with system sound, without restrictOwnAudio: it would carry the call that K1 plays
     await presentAs(k1, "Kim", { audio: true, surface: "monitor" });
@@ -2289,7 +2364,7 @@ const main = async () => {
     assert.equal(s.audio[0].muted, false, "the call plays meanwhile");
     await k1.shot("echo-choice");
 
-    await k1.click("#echo-choice-screen");
+    await k1.click(tid("echo-choice-screen"));
     s = await waitCall(k1, "K1 shares the sound", (c) => !c.echoChoice && c.screenAudio === true);
     assert.equal(s.audio[0].muted, true, "the call is muted on this page");
 
@@ -2300,15 +2375,15 @@ const main = async () => {
     // A new screen asks again
     await switchTo(k1, { audio: true, surface: "monitor" });
     s = await waitCall(k1, "K1 asked again", (c) => c.echoChoice && c.screenAudio === false);
-    await k1.click("#echo-choice-call");
+    await k1.click(tid("echo-choice-call"));
     s = await waitCall(k1, "K1 keeps the call", (c) => !c.echoChoice);
     assert.equal(s.screenAudio, false);
     assert.equal(s.audio[0].muted, false);
 
     // Without anyone else in the call, the sound goes out; when the call starts again, the choice stays
-    await k2.click("#call-leave-button");
+    await k2.click(tid("call-leave"));
     await waitCall(k1, "K1 shares the sound with no call", (c) => c.screenAudio === true && c.audio.length === 0);
-    await k2.click("#call-join-button");
+    await k2.click(tid("call-join"));
     s = await waitCall(k1, "K1 off again", (c) => c.screenAudio === false && c.audio.length === 1);
     assert.equal(s.echoChoice, false, "the choice was made for this screen");
     for (const page of [k1, k2]) {
@@ -2320,23 +2395,23 @@ const main = async () => {
 
   const VIDEO = `(() => {
     const camera = window.__cameras.at(-1)?.getVideoTracks()[0];
-    const button = document.getElementById("call-camera-button");
+    const button = $t("call-camera");
     return {
-      cameraButton: button.classList.contains("hidden") ? null : { pressed: button.getAttribute("aria-pressed") === "true", disabled: button.disabled },
+      cameraButton: button == null ? null : { pressed: button.getAttribute("aria-pressed") === "true", disabled: button.disabled },
       camera: camera == null ? null : camera.readyState,
-      tiles: [...document.querySelectorAll('#stage .tile[data-kind="camera"]')].map((tile) => {
+      tiles: $$t("tile").filter((tile) => tile.dataset.kind === "camera").map((tile) => {
         const video = tile.querySelector("video");
         return {
-          name: tile.querySelector(".tile-name").textContent,
+          name: tile.querySelector('[data-testid="tile-name"]').textContent,
           self: tile.hasAttribute("data-self"),
           playing: video.videoWidth > 0 && !video.paused,
           muted: video.muted,
           mirrored: getComputedStyle(video).transform !== "none",
         };
       }),
-      bar: [...document.querySelectorAll("#call-members li")].map((li) => li.textContent),
-      speaking: [...document.querySelectorAll("#call-members li[data-speaking]")].map((li) => li.firstChild.textContent),
-      notices: [...document.querySelectorAll(".notice:not(.hidden)")].map((notice) => notice.id),
+      bar: $$t("call-member").map((member) => member.querySelector(".mantine-Badge-label").textContent + (member.hasAttribute("data-camera") ? "📷" : "") + (member.hasAttribute("data-muted") ? "🔇" : "")),
+      speaking: $$t("call-member").filter((member) => member.hasAttribute("data-speaking")).map((member) => member.querySelector(".mantine-Badge-label").textContent),
+      notices: [...document.querySelectorAll('[data-testid^="notice-"]')].map((notice) => notice.dataset.testid),
     };
   })()`;
   const waitVideo = async (page, desc, pred, timeout = 15000) => {
@@ -2350,7 +2425,7 @@ const main = async () => {
     throw new Error(`${page.label}: timeout waiting for ${desc}\nlast video: ${JSON.stringify(last, null, 1)}`);
   };
   const joinCall = async (page) => {
-    await page.click("#call-join-button");
+    await page.click(tid("call-join"));
     await waitCall(page, `${page.label} in the call`, (c) => c.leave);
   };
   const videoRoom = `${ORIGIN}/#VideoRoom${Date.now()}`;
@@ -2371,7 +2446,7 @@ const main = async () => {
       assert.equal((await v1.eval(VIDEO)).cameraButton, null, "no camera button outside the call");
       await joinCall(v1);
       assert.deepEqual((await v1.eval(VIDEO)).cameraButton, { pressed: false, disabled: false }, "the camera is off");
-      await v1.click("#call-camera-button");
+      await v1.click(tid("call-camera"));
       const own = await waitVideo(v1, "V1 shows its camera", (v) => v.tiles.length === 1 && v.tiles[0].playing);
       assert.deepEqual(own.tiles[0], { name: "You", self: true, playing: true, muted: true, mirrored: true });
       assert.deepEqual(own.cameraButton, { pressed: true, disabled: false });
@@ -2390,20 +2465,20 @@ const main = async () => {
   );
 
   await step("video: turning the camera off removes the tile and stops the camera", async () => {
-    await v1.click("#call-camera-button");
+    await v1.click(tid("call-camera"));
     const off = await waitVideo(v1, "V1 camera off", (v) => v.tiles.length === 0 && v.camera === "ended");
     assert.deepEqual(off.cameraButton, { pressed: false, disabled: false });
     await waitVideo(v2, "V2 no longer sees Vic's camera", (v) => v.tiles.length === 0 && v.bar[0] === "Vic");
-    await v1.click("#call-camera-button");
+    await v1.click(tid("call-camera"));
     await waitVideo(v2, "V2 sees Vic's camera again", (v) => v.tiles[0]?.playing === true);
   });
 
   await step("video: a camera beyond the limit of the room is refused and stopped", async () => {
     await joinCall(v2);
-    await v2.click("#call-camera-button");
+    await v2.click(tid("call-camera"));
     await waitVideo(v3, "V3 sees two cameras", (v) => v.tiles.length === 2 && v.tiles.every((tile) => tile.playing));
     await joinCall(v3);
-    await v3.click("#call-camera-button");
+    await v3.click(tid("call-camera"));
     const refused = await waitVideo(v3, "V3 refused", (v) => v.notices.includes("notice-cameras-full"));
     await waitVideo(v3, "V3's camera stopped", (v) => v.camera === "ended" && v.cameraButton?.pressed === false);
     assert.equal(refused.tiles.filter((tile) => tile.self).length, 0);
@@ -2414,7 +2489,7 @@ const main = async () => {
   await step("call: who speaks is marked, but not while muted", async () => {
     // Chrome's fake microphone beeps
     await waitVideo(v1, "V1 sees Wes speak", (v) => v.speaking.includes("Wes"), 20000);
-    await v2.click("#call-mute-button");
+    await v2.click(tid("call-mute"));
     await waitCall(v1, "V1 sees Wes muted", (c) =>
       c.bar?.some((name) => name.startsWith("Wes") && name.includes("🔇")),
     );
@@ -2423,29 +2498,27 @@ const main = async () => {
       assert.ok(!(await v1.eval(VIDEO)).speaking.includes("Wes"), "a muted participant does not speak");
       await sleep(200);
     }
-    await v2.click("#call-mute-button");
+    await v2.click(tid("call-mute"));
   });
 
   await step(
     "call: the menu lists the devices; another microphone replaces the track on the same connections",
     async () => {
-      await openMenu(v2);
+      await v2.openMenu();
       const options = await waitEval(
         v2,
         "V2 lists the devices",
-        `[...document.querySelectorAll("#device-microphone option")].map((option) => [option.value, option.textContent])`,
+        `[...$t("device-microphone").options].map((option) => [option.value, option.textContent])`,
         (list) => list.length >= 2 && list.slice(1).every(([value, label]) => value !== "" && label !== ""),
       );
       assert.equal(options[0][0], "", "the default comes first");
       assert.ok(await v2.eval(isShown("menu-devices")));
-      const cameras = await v2.eval(`document.querySelectorAll("#device-camera option").length`);
+      const cameras = await v2.eval(`$t("device-camera").options.length`);
       assert.ok(cameras >= 2, "the fake camera is listed");
       const pcs = await v2.eval("window.__pcs.length");
       const replaced = await v2.eval("window.__replaced.length");
       const chosen = options.at(-1)[0];
-      await v2.eval(
-        `(() => { const select = document.getElementById("device-microphone"); select.value = ${JSON.stringify(chosen)}; select.dispatchEvent(new Event("change")); })()`,
-      );
+      await v2.type(tid("device-microphone"), chosen);
       await waitEval(v2, "V2 uses another microphone", "window.__microphones.length", (n) => n === 2);
       await waitEval(
         v2,
@@ -2458,20 +2531,20 @@ const main = async () => {
       assert.deepEqual(await v2.eval("window.__userMediaConstraints.audio.deviceId"), { ideal: chosen });
       assert.equal(JSON.parse(await v2.eval(`localStorage.getItem("screensy.devices")`)).microphone, chosen);
       await waitCall(v1, "V1 still plays Wes", (c) => c.audio.length === 2 && c.audio.every((audio) => audio.playing));
-      await closeMenu(v2);
+      await v2.closeMenu();
     },
   );
 
   await step("call: the statistics list the connections of the call", async () => {
-    await openMenu(v2);
+    await v2.openMenu();
     const stats = await waitEval(
       v2,
       "V2's call statistics",
-      `[...document.querySelectorAll("#stats-list .stats-entry")].map((e) => e.querySelector(".stats-name").textContent + " " + e.querySelector(".stats-direction").textContent)`,
+      `$$t("stats-entry").map((e) => e.querySelector('[data-testid="stats-name"]').textContent + " " + e.querySelector('[data-testid="stats-direction"]').textContent)`,
       (list) => list.includes("Vic (call) receiving") && list.includes("Vic (call) sending"),
     );
     assert.ok(stats.includes("Xia (call) receiving"), JSON.stringify(stats));
-    await closeMenu(v2);
+    await v2.closeMenu();
     for (const page of [v1, v2, v3]) {
       await cdp.send("Target.closeTarget", { targetId: page.targetId });
     }
@@ -2492,7 +2565,7 @@ const main = async () => {
         env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
         detached: true,
       });
-      await waitHttp(`${CF_ORIGIN}/styles.css`, 60000);
+      await waitHttp(`${CF_ORIGIN}/screensy.css`, 60000);
     });
 
     await step(
@@ -2514,7 +2587,7 @@ const main = async () => {
         }
         const script = await fetch(`${CF_ORIGIN}/screensy.js`);
         assert.equal(await script.text(), readFileSync(join(REPO, "screensy-website", "screensy.js"), "utf8"));
-        assert.equal((await fetch(`${CF_ORIGIN}/styles.css`)).status, 200);
+        assert.equal((await fetch(`${CF_ORIGIN}/screensy.css`)).status, 200);
       },
     );
 
@@ -2532,7 +2605,7 @@ const main = async () => {
       await pressEnter(viewer, "through the Worker");
       await waitChat(presenter, "W1 gets the chat message", (c) => texts(c).includes("Guest 2: through the Worker"));
       // And the call
-      await viewer.click("#call-join-button");
+      await viewer.click(tid("call-join"));
       await waitCall(presenter, "W1 plays W2's microphone", (c) => c.audio.length === 1 && c.audio[0].playing, 20000);
       for (const page of [presenter, viewer]) {
         await cdp.send("Target.closeTarget", { targetId: page.targetId });

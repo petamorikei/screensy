@@ -87,14 +87,6 @@ export class IncomingStream {
     }
   }
 
-  /**
-   * The level of the received sound, from 0 to 1, or null if nothing was received lately. Cheap: no getStats.
-   */
-  audioLevel(): number | null {
-    const receiver = this.link.connection.getReceivers().find((receiver) => receiver.track.kind === "audio");
-    return receiver?.getSynchronizationSources()[0]?.audioLevel ?? null;
-  }
-
   close(): void {
     this.link.close();
   }

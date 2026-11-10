@@ -9,11 +9,12 @@ import {
   writeDevices,
 } from "./devices.ts";
 import type { IncomingStream } from "./incoming-stream.ts";
+import { showNotice } from "./notices.tsx";
 import { OutgoingCall } from "./outgoing-call.ts";
 import type { MessageSender } from "./signaling.ts";
+import { callAtom, devicesAtom, store } from "./state/atoms.ts";
+import type { CallMemberView } from "./state/views.ts";
 import { statNumber } from "./stats.ts";
-import type { CallMemberView } from "./ui/call-panel.ts";
-import type { Ui } from "./ui/ui.ts";
 
 /**
  * How often the levels of the call's sound are read, while someone is in the call
@@ -21,9 +22,10 @@ import type { Ui } from "./ui/ui.ts";
 const LEVEL_INTERVAL_MS = 300;
 
 /**
- * The level above which a participant counts as speaking, from 0 to 1 (about -26 dBov)
+ * The level above which a participant counts as speaking, from 0 to 1 (about -34 dBov), as the root mean square of the
+ * sound since the previous reading
  */
-const SPEAKING_LEVEL = 0.05;
+const SPEAKING_LEVEL = 0.02;
 
 /**
  * How long someone still counts as speaking after the level dropped, so that the mark does not flicker between words
@@ -49,7 +51,6 @@ const requestMedia = (constraints: MediaStreamConstraints): Promise<MediaStream>
 };
 
 export interface CallControllerContext {
-  readonly ui: Ui;
   readonly sendMessage: MessageSender;
   readonly rtcConfig: () => RTCConfiguration;
   readonly render: () => void;
@@ -102,6 +103,11 @@ export class CallController {
    * Until when each participant counts as speaking, in performance.now() time
    */
   private readonly speakingUntil = new Map<string, number>();
+
+  /**
+   * The audio energy and duration of each participant's sound at the previous reading
+   */
+  private readonly lastEnergy = new Map<string, { energy: number; duration: number }>();
   private speakingIds = "";
   private levelTimer: number | null = null;
   private readingLevels = false;
@@ -110,16 +116,12 @@ export class CallController {
     this.context = context;
     this.supported = "getUserMedia" in navigator.mediaDevices;
 
-    const { ui } = context;
-    ui.call.onjoin = () => this.join();
-    ui.call.onleave = () => this.leave();
-    ui.call.onmute = (muted: boolean) => this.setMuted(muted);
-    ui.call.oncamera = (on: boolean) => this.setCamera(on);
-    ui.callAudio.onblocked = () => ui.notices.showNotice("notice-call-audio-blocked");
-    ui.devices.ondevicechange = (kind: DeviceKind, deviceId: string) => this.changeDevice(kind, deviceId);
-    ui.devices.show(this.supported, canChooseSpeaker());
-    ui.stage.setSpeaker(this.devices.speaker);
-    ui.callAudio.setSpeaker(this.devices.speaker);
+    store.set(devicesAtom, (devices) => ({
+      ...devices,
+      supported: this.supported,
+      canChooseSpeaker: canChooseSpeaker(),
+      choice: this.devices,
+    }));
 
     if (this.supported) {
       navigator.mediaDevices.addEventListener("devicechange", () => void this.refreshDevices());
@@ -219,7 +221,7 @@ export class CallController {
   handleCameraRejected(): void {
     if (this.cameraWanted) {
       this.stopCamera();
-      this.context.ui.notices.showNotice("notice-cameras-full");
+      showNotice("cameras-full");
       this.context.render();
     }
   }
@@ -238,21 +240,23 @@ export class CallController {
    * The buttons and the participants of the call, and the call's sound. The sound keeps playing while the server is
    * away, from the last room state: it goes from browser to browser.
    */
-  show(ready: boolean, nameOf: (participantId: string) => string): void {
+  show(
+    ready: boolean,
+    nameOf: (participantId: string) => string,
+    echo: { echoChoice: boolean; audioMuted: boolean },
+  ): void {
     const room = this.context.room();
     const calls = room?.state.calls ?? [];
     const selfId = room?.selfId ?? null;
-    const { ui } = this.context;
 
-    ui.callAudio.show(
-      calls.flatMap((call) => {
-        const stream = call.participantId === selfId ? null : this.context.incoming(call.streamId)?.mediaStream;
-        return stream == null ? [] : [{ key: call.streamId, stream }];
-      }),
-    );
+    const audio = calls.flatMap((call) => {
+      const stream = call.participantId === selfId ? null : this.context.incoming(call.streamId)?.mediaStream;
+      return stream == null ? [] : [{ key: call.streamId, stream }];
+    });
 
     const members: CallMemberView[] = ready
       ? calls.map((call) => ({
+          id: call.participantId,
           name: nameOf(call.participantId),
           muted: call.muted,
           camera: call.camera,
@@ -260,7 +264,7 @@ export class CallController {
         }))
       : [];
 
-    ui.call.show({
+    store.set(callAtom, {
       ready,
       supported: this.supported,
       joined: this.call != null,
@@ -269,6 +273,9 @@ export class CallController {
       camera: this.cameraWanted,
       cameraBusy: this.requestingCamera || this.pendingCamera != null,
       members,
+      audio,
+      audioMuted: echo.audioMuted,
+      echoChoice: echo.echoChoice,
     });
 
     this.updateLevelTimer(calls);
@@ -283,7 +290,8 @@ export class CallController {
     }
 
     try {
-      this.context.ui.devices.showDevices(await listDevices(), this.devices);
+      const lists = await listDevices();
+      store.set(devicesAtom, (devices) => ({ ...devices, lists, choice: this.devices }));
     } catch (error) {
       console.warn("Could not list the devices.", error);
     }
@@ -309,9 +317,9 @@ export class CallController {
   }
 
   /**
-   * Asks for the microphone and joins the call. Called from the click on "Join call".
+   * Asks for the microphone and joins the call. Must be called in the handler of the click on "Join call".
    */
-  private join(): void {
+  join(): void {
     if (this.call != null || this.joining || !this.supported) {
       return;
     }
@@ -337,7 +345,7 @@ export class CallController {
       },
       () => {
         this.joining = false;
-        this.context.ui.notices.showNotice("notice-microphone-denied");
+        showNotice("microphone-denied");
         this.context.render();
       },
     );
@@ -354,7 +362,7 @@ export class CallController {
     });
   }
 
-  private leave(): void {
+  leave(): void {
     if (this.call == null) {
       return;
     }
@@ -364,7 +372,7 @@ export class CallController {
     this.context.render();
   }
 
-  private setMuted(muted: boolean): void {
+  setMuted(muted: boolean): void {
     if (this.call == null) {
       return;
     }
@@ -377,7 +385,7 @@ export class CallController {
   /**
    * Turns the camera on or off. On, the camera is only sent once the room accepts it.
    */
-  private setCamera(on: boolean): void {
+  setCamera(on: boolean): void {
     const call = this.call;
 
     if (call == null) {
@@ -419,7 +427,7 @@ export class CallController {
       },
       () => {
         this.requestingCamera = false;
-        this.context.ui.notices.showNotice("notice-camera-denied");
+        showNotice("camera-denied");
         this.context.render();
       },
     );
@@ -455,16 +463,15 @@ export class CallController {
     }
   }
 
-  private changeDevice(kind: DeviceKind, deviceId: string): void {
+  changeDevice(kind: DeviceKind, deviceId: string): void {
     this.devices = { ...this.devices, [kind]: deviceId };
     writeDevices(this.devices);
+    // The speaker applies where the page plays: the stage and the call
+    store.set(devicesAtom, (devices) => ({ ...devices, choice: this.devices }));
 
-    if (kind === "speaker") {
-      this.context.ui.stage.setSpeaker(deviceId);
-      this.context.ui.callAudio.setSpeaker(deviceId);
-    } else if (kind === "microphone") {
+    if (kind === "microphone") {
       void this.replaceMicrophone();
-    } else {
+    } else if (kind === "camera") {
       void this.replaceCamera();
     }
   }
@@ -484,7 +491,7 @@ export class CallController {
     try {
       stream = await navigator.mediaDevices.getUserMedia(microphoneConstraints(this.devices));
     } catch {
-      this.context.ui.notices.showNotice("notice-microphone-denied");
+      showNotice("microphone-denied");
       return;
     }
 
@@ -516,7 +523,7 @@ export class CallController {
     try {
       stream = await navigator.mediaDevices.getUserMedia(cameraConstraints(this.devices));
     } catch {
-      this.context.ui.notices.showNotice("notice-camera-denied");
+      showNotice("camera-denied");
       return;
     }
 
@@ -548,6 +555,7 @@ export class CallController {
       window.clearInterval(this.levelTimer);
       this.levelTimer = null;
       this.speakingUntil.clear();
+      this.lastEnergy.clear();
       this.speakingIds = "";
     }
   }
@@ -574,10 +582,14 @@ export class CallController {
           continue;
         }
 
-        const level =
+        const connection =
           call.participantId === room.selfId
-            ? await this.ownLevel()
-            : (this.context.incoming(call.streamId)?.audioLevel() ?? null);
+            ? this.call?.connections()[0]?.connection
+            : this.context.incoming(call.streamId)?.connection;
+        const level =
+          connection == null
+            ? null
+            : await this.levelSince(call.participantId, connection, call.participantId === room.selfId);
 
         if (level != null && level > SPEAKING_LEVEL) {
           this.speakingUntil.set(call.participantId, now + SPEAKING_HOLD_MS);
@@ -599,24 +611,33 @@ export class CallController {
   }
 
   /**
-   * The level of the own microphone, from the statistics of one of the own connections
+   * The level of a participant's sound since the previous reading, from the audio energy in the statistics: the own
+   * microphone as one of the own connections sends it, or the sound received from someone else. Unlike the level of the
+   * moment, it does not miss a short sound between two readings.
    */
-  private async ownLevel(): Promise<number | null> {
-    const connection = this.call?.connections()[0]?.connection;
+  private async levelSince(participantId: string, connection: RTCPeerConnection, own: boolean): Promise<number | null> {
+    const type = own ? "media-source" : "inbound-rtp";
+    let energy: number | null = null;
+    let duration: number | null = null;
 
-    if (connection == null || this.call?.muted) {
-      return null;
-    }
-
-    const report = await connection.getStats();
-    let level: number | null = null;
-
-    report.forEach((entry: Record<string, unknown>) => {
-      if (entry.type === "media-source" && entry.kind === "audio") {
-        level = statNumber(entry, "audioLevel");
+    (await connection.getStats()).forEach((entry: Record<string, unknown>) => {
+      if (entry.type === type && entry.kind === "audio") {
+        energy = statNumber(entry, "totalAudioEnergy");
+        duration = statNumber(entry, "totalSamplesDuration");
       }
     });
 
-    return level;
+    if (energy == null || duration == null) {
+      return null;
+    }
+
+    const last = this.lastEnergy.get(participantId);
+    this.lastEnergy.set(participantId, { energy, duration });
+
+    if (last == null || duration <= last.duration || energy < last.energy) {
+      return null;
+    }
+
+    return Math.sqrt((energy - last.energy) / (duration - last.duration));
   }
 }
