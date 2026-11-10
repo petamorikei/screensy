@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { SNIFF_BYTES, sniffImageType } from "./image-preview.ts";
 import type { PeerMesh } from "./peer-mesh.ts";
 
 /**
@@ -40,9 +41,15 @@ const MAX_AUTHORS = 100;
 
 /**
  * The type of every received file. The type that the sender names is not used: a Blob of "text/html" or
- * "image/svg+xml" that someone opens in a tab would run its scripts with this page's origin.
+ * "image/svg+xml" that someone opens in a tab would run its scripts with this page's origin. Only the preview of a
+ * raster image gets the type that its bytes show.
  */
 const RECEIVED_TYPE = "application/octet-stream";
+
+/**
+ * The downloads that run at once for the previews, without a click
+ */
+const PREFETCH_CONCURRENCY = 2;
 
 const MAX_ID_LENGTH = 64;
 const TransferIdSchema = z.int().nonnegative().max(0xffffffff);
@@ -196,6 +203,20 @@ export class FileTransfers {
   private nextTransferId = 0;
 
   /**
+   * The object URLs of the previews of the held files that are raster images, by file ID
+   */
+  private readonly previews = new Map<string, string>();
+
+  /**
+   * The files to fetch for their previews, newest first, and those already tried, which never start again by
+   * themselves: a cancelled or failed one waits for a click
+   */
+  private readonly prefetchQueue = new Map<string, SharedFileInfo>();
+  private readonly prefetchTried = new Set<string>();
+  private readonly prefetching = new Set<string>();
+  private closed = false;
+
+  /**
    * The transfers that this page sends, as peer ID and transfer ID
    */
   private readonly sending = new Set<string>();
@@ -237,6 +258,28 @@ export class FileTransfers {
    */
   isAuthorHere(authorId: string): boolean {
     return [...this.authors].some(([peerId, ids]) => ids.has(authorId) && this.mesh.filesChannel(peerId) != null);
+  }
+
+  /**
+   * The object URL of the file's preview, if this page holds the file and it is a raster image
+   */
+  preview(fileId: string): string | null {
+    return this.previews.get(fileId) ?? null;
+  }
+
+  /**
+   * Fetches files for their previews without a click, a few at a time, each once: when a peer that has it is here
+   *
+   * @param files Newest first
+   */
+  prefetch(files: SharedFileInfo[]): void {
+    for (const file of files) {
+      if (!this.prefetchTried.has(file.id) && !this.held.has(file.id)) {
+        this.prefetchQueue.set(file.id, file);
+      }
+    }
+
+    this.pumpPrefetch();
   }
 
   state(fileId: string): DownloadState {
@@ -292,6 +335,7 @@ export class FileTransfers {
     if (download != null) {
       this.sendControl(download.peerId, { type: "cancel", transferId: download.transferId });
       this.downloads.delete(fileId);
+      this.prefetchEnded(fileId);
       this.changed();
     }
   }
@@ -353,6 +397,8 @@ export class FileTransfers {
 
         this.peerFiles.set(peerId, files);
         this.changed();
+        // A file to preview may have been waiting for someone who has it
+        this.pumpPrefetch();
         break;
       }
       case "get":
@@ -393,12 +439,21 @@ export class FileTransfers {
    * Forgets the downloaded files
    */
   close(): void {
+    this.closed = true;
+
     for (const state of this.finished.values()) {
       if (state.status === "done") {
         URL.revokeObjectURL(state.url);
       }
     }
 
+    for (const url of this.previews.values()) {
+      URL.revokeObjectURL(url);
+    }
+
+    this.previews.clear();
+    this.prefetchQueue.clear();
+    this.prefetching.clear();
     this.finished.clear();
     this.downloads.clear();
     this.sending.clear();
@@ -419,9 +474,74 @@ export class FileTransfers {
    */
   private hold(fileId: string, blob: Blob): void {
     this.held.set(fileId, blob);
+    this.prefetchQueue.delete(fileId);
+    void this.makePreview(fileId, blob);
 
     for (const peerId of this.mesh.openPeers()) {
       this.sendHave(peerId, [fileId]);
+    }
+  }
+
+  /**
+   * Makes the preview of a held file whose first bytes show a raster image: a Blob of that type, beside the one of
+   * the download, which stays application/octet-stream
+   */
+  private async makePreview(fileId: string, blob: Blob): Promise<void> {
+    if (this.previews.has(fileId)) {
+      return;
+    }
+
+    let type: string | null;
+
+    try {
+      type = sniffImageType(new Uint8Array(await blob.slice(0, SNIFF_BYTES).arrayBuffer()));
+    } catch (error) {
+      console.warn("Could not read a file for its preview.", error);
+      return;
+    }
+
+    if (type == null || this.closed || this.previews.has(fileId) || this.held.get(fileId) !== blob) {
+      return;
+    }
+
+    this.previews.set(fileId, URL.createObjectURL(new Blob([blob], { type })));
+    this.changed();
+  }
+
+  /**
+   * Starts the next downloads for the previews, newest first, up to PREFETCH_CONCURRENCY at once, for the files that a
+   * connected peer has
+   */
+  private pumpPrefetch(): void {
+    for (const [fileId, file] of this.prefetchQueue) {
+      if (this.prefetching.size >= PREFETCH_CONCURRENCY) {
+        return;
+      }
+
+      if (this.held.has(fileId) || this.downloads.has(fileId) || this.finished.has(fileId)) {
+        // Downloaded or tried by a click meanwhile
+        this.prefetchQueue.delete(fileId);
+        this.prefetchTried.add(fileId);
+        continue;
+      }
+
+      if (!this.isAvailable(fileId)) {
+        continue;
+      }
+
+      this.prefetchQueue.delete(fileId);
+      this.prefetchTried.add(fileId);
+      this.prefetching.add(fileId);
+      this.download(file);
+    }
+  }
+
+  /**
+   * A download ended, so the next one for a preview can start
+   */
+  private prefetchEnded(fileId: string): void {
+    if (this.prefetching.delete(fileId)) {
+      this.pumpPrefetch();
     }
   }
 
@@ -500,12 +620,14 @@ export class FileTransfers {
     // Pass it on to those who ask
     this.hold(fileId, blob);
     this.changed();
+    this.prefetchEnded(fileId);
   }
 
   private fail(fileId: string): void {
     this.downloads.delete(fileId);
     this.finished.set(fileId, { status: "failed" });
     this.changed();
+    this.prefetchEnded(fileId);
   }
 
   /**

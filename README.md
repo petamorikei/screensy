@@ -454,7 +454,8 @@ per presenter: with four presenters, a viewer receives four streams. Lower the
 bitrate or the resolution in the menu when the connections are slow. The call
 works the same way: each participant in the call sends their microphone, and
 their camera while it is on, to everyone in the room. A file goes from its
-sender to each person who downloads it.
+sender to each person who downloads it. Images up to 10 MiB download by
+themselves, for their previews in the chat.
 
 ## Ports
 

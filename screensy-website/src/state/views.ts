@@ -113,6 +113,10 @@ export interface ChatFileView {
   status: "own" | "ended" | "stopped" | "unreachable" | "idle" | "receiving" | "done" | "failed";
   progress: number;
   url: string | null;
+  /**
+   * The object URL of the preview, for a raster image that this page holds
+   */
+  preview: string | null;
 }
 
 export interface ChatEntryView {

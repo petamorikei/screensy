@@ -4,6 +4,8 @@ import {
   Button,
   CloseButton,
   Group,
+  Image,
+  Modal,
   Paper,
   Progress,
   ScrollArea,
@@ -12,6 +14,7 @@ import {
   Textarea,
   Title,
   Tooltip,
+  UnstyledButton,
 } from "@mantine/core";
 import { IconDownload, IconFile, IconPaperclip, IconSend } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
@@ -31,6 +34,36 @@ const AT_END_PX = 20;
 const timeFormat = new Intl.DateTimeFormat(pageLanguage(), { hour: "2-digit", minute: "2-digit" });
 
 /**
+ * The height of a preview in the log, fixed so that the log keeps following its end while the image loads
+ */
+const PREVIEW_HEIGHT = 160;
+
+/**
+ * The preview of an image in the log, which opens it larger in a dialog
+ */
+const ImagePreview = (props: { name: string; url: string }) => {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <UnstyledButton
+        data-testid="chat-file-preview"
+        aria-label={t("file.enlarge", { name: props.name })}
+        onClick={() => setOpen(true)}
+        display="block"
+        w="100%"
+        mb={6}
+      >
+        <Image src={props.url} alt={props.name} w="100%" h={PREVIEW_HEIGHT} fit="scale-down" radius="sm" bg="dark.8" />
+      </UnstyledButton>
+      <Modal opened={open} onClose={() => setOpen(false)} title={props.name} size="auto" centered>
+        <Image data-testid="image-viewer" src={props.url} alt={props.name} mah="80vh" maw="100%" fit="contain" />
+      </Modal>
+    </>
+  );
+};
+
+/**
  * The name and size of a file, and what this page can do with it. The name comes from someone else: React inserts it
  * as text.
  */
@@ -46,6 +79,7 @@ const FileRow = (props: { file: ChatFileView; onResume: (fileId: string) => void
 
   return (
     <Paper withBorder p="xs" data-testid="chat-file" data-file-id={file.id} data-status={file.status}>
+      {file.preview != null && <ImagePreview name={file.name} url={file.preview} />}
       <Group gap="xs" wrap="nowrap">
         <IconFile size={18} />
         <Text size="sm" style={{ overflowWrap: "anywhere" }} data-testid="chat-file-name">
@@ -59,7 +93,12 @@ const FileRow = (props: { file: ChatFileView; onResume: (fileId: string) => void
         {file.status === "ended" && (
           <>
             {note(t("file.ended"))}
-            <Button size="compact-xs" variant="default" onClick={() => props.onResume(file.id)}>
+            <Button
+              data-testid="chat-file-resume"
+              size="compact-xs"
+              variant="default"
+              onClick={() => props.onResume(file.id)}
+            >
               {t("file.resume")}
             </Button>
           </>
@@ -68,6 +107,7 @@ const FileRow = (props: { file: ChatFileView; onResume: (fileId: string) => void
         {file.status === "unreachable" && note(t("file.unreachable"))}
         {(file.status === "idle" || file.status === "failed") && (
           <Button
+            data-testid="chat-file-download"
             size="compact-xs"
             variant="default"
             leftSection={<IconDownload size={14} />}
@@ -79,7 +119,12 @@ const FileRow = (props: { file: ChatFileView; onResume: (fileId: string) => void
         {file.status === "receiving" && (
           <>
             <Progress value={file.progress * 100} flex={1} data-testid="chat-file-progress" />
-            <Button size="compact-xs" variant="default" onClick={() => controller.cancelDownload(file.id)}>
+            <Button
+              data-testid="chat-file-cancel"
+              size="compact-xs"
+              variant="default"
+              onClick={() => controller.cancelDownload(file.id)}
+            >
               {t("file.cancel")}
             </Button>
           </>

@@ -173,4 +173,5 @@ export const ja: Messages = {
   "file.stopped": "送信者が共有をやめました",
   "file.ended": "再読み込みで共有が終わりました",
   "file.resume": "選び直す",
+  "file.enlarge": "{name}を拡大",
 };
