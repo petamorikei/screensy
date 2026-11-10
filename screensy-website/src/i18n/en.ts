@@ -160,6 +160,7 @@ export const en = {
   "chat.placeholder": "Message (Shift+Enter for a new line)",
   "chat.message": "Message",
   "chat.attach": "Attach files",
+  "chat.drop": "Drop files to attach them",
   "chat.send": "Send",
   "file.download": "Download",
   "file.cancel": "Cancel",

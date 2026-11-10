@@ -2325,6 +2325,64 @@ const main = async () => {
     }
   });
 
+  // Drags files over an element of the page and drops them there, as a person would from the desktop
+  const dragFiles = (page, selector, names) =>
+    page.eval(`(() => {
+      const transfer = new DataTransfer();
+      for (const name of ${JSON.stringify(names)}) {
+        transfer.items.add(new File(["dropped " + name], name, { type: "text/plain" }));
+      }
+      window.__dragTransfer = transfer;
+      document.querySelector(${JSON.stringify(selector)}).dispatchEvent(
+        new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+    })()`);
+  // Drops the dragged files, and tells whether the page kept the browser from opening them
+  const dropFiles = (page, selector) =>
+    page.eval(`(() => {
+      const target = document.querySelector(${JSON.stringify(selector)});
+      const options = { bubbles: true, cancelable: true, dataTransfer: window.__dragTransfer };
+      target.dispatchEvent(new DragEvent("dragover", options));
+      const drop = new DragEvent("drop", options);
+      target.dispatchEvent(drop);
+      return drop.defaultPrevented;
+    })()`);
+
+  await step("files: files dropped on the chat are attached, and a file dropped elsewhere does not open", async () => {
+    const dropRoom = `${ORIGIN}/#DropRoom${Date.now()}`;
+    const d1 = await newPage(cdp, "D1", { initExtra: withName("Dee") });
+    const d2 = await newPage(cdp, "D2", { initExtra: withName("Eli") });
+    await d1.goto(dropRoom);
+    await d2.goto(dropRoom);
+    await waitChat(d1, "D1 reaches D2", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    await waitChat(d2, "D2 reaches D1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    await d1.click(tid("chat-toggle"));
+
+    await dragFiles(d1, '[data-testid="chat-log"]', ["one.txt", "two.txt"]);
+    await waitEval(d1, "the chat invites the drop", `$t("chat-drop") != null`, (shown) => shown === true);
+    await d1.shot("chat-drop");
+    assert.equal(await dropFiles(d1, '[data-testid="chat-log"]'), true);
+    const own = await waitFiles(d1, "D1 shares both files", (files) => files.length === 2);
+    assert.deepEqual(
+      own.map((file) => [file.name, file.status]),
+      [
+        ["one.txt (15 B)", "own"],
+        ["two.txt (15 B)", "own"],
+      ],
+    );
+    assert.equal(await d1.eval(`$t("chat-drop") == null`), true, "the invitation goes with the drop");
+    await waitFiles(d2, "D2 sees both files", (files) => files.length === 2 && files.every((f) => f.status === "idle"));
+
+    // Outside the chat, the page keeps the browser from opening the file in place of the room, and attaches nothing
+    await dragFiles(d1, '[data-testid="stage"]', ["three.txt"]);
+    assert.equal(await dropFiles(d1, '[data-testid="stage"]'), true);
+    await sleep(500);
+    assert.equal((await d1.eval(FILES)).length, 2);
+    for (const page of [d1, d2]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+  });
+
   // --- Voice call: one stream per participant in the call, to everyone in the room ---
 
   // The badges of the tiles and of the row of voices read as what they show (🖥 a screen, 📷 a camera, ☎ the voice

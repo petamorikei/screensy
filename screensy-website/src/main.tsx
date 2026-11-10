@@ -27,6 +27,22 @@ const missingSupport = (): UnsupportedId | null => {
   return null;
 };
 
+/**
+ * Keeps a file that is dropped outside the chat from opening in place of the room. The chat takes the files dropped on
+ * it first, and marks the event.
+ */
+const ignoreDroppedFiles = (event: DragEvent): void => {
+  if (event.defaultPrevented || !event.dataTransfer?.types.includes("Files")) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (event.type === "dragover") {
+    event.dataTransfer.dropEffect = "none";
+  }
+};
+
 const main = (): void => {
   let isCreator = false;
 
@@ -35,6 +51,9 @@ const main = (): void => {
     history.replaceState(null, "", `#${generateRoomName()}`);
     isCreator = true;
   }
+
+  window.addEventListener("dragover", ignoreDroppedFiles);
+  window.addEventListener("drop", ignoreDroppedFiles);
 
   // If the user manually changes the hash, force a reload
   window.onhashchange = () => {

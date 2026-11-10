@@ -5,6 +5,13 @@ All notable changes to the screensy project will be documented in this file.
 The format is based on [Keep a Changelog], and this project adheres to
 [Semantic Versioning].
 
+## Unreleased
+
+### Added
+
+-   Files can also be attached by dropping them on the chat. A file dropped
+    anywhere else on the page no longer opens in place of the room.
+
 ## 2.1.0 - 2026-11-10
 
 ### Added
