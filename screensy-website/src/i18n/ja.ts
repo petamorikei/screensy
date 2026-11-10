@@ -163,6 +163,7 @@ export const ja: Messages = {
   "chat.alone": "まだ誰もいません",
   "chat.placeholder": "メッセージ（Shift+Enterで改行）",
   "chat.message": "メッセージ",
+  "chat.drop": "ドロップしてファイルを添付",
   "chat.attach": "ファイルを添付",
   "chat.send": "送信",
   "file.download": "取得",

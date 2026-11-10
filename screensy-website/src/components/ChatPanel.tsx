@@ -6,6 +6,7 @@ import {
   Group,
   Image,
   Modal,
+  Overlay,
   Paper,
   Progress,
   ScrollArea,
@@ -18,7 +19,7 @@ import {
 } from "@mantine/core";
 import { IconDownload, IconFile, IconPaperclip, IconSend } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import type { KeyboardEvent } from "react";
+import type { DragEvent, KeyboardEvent } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { MAX_CHAT_TEXT_LENGTH } from "../chat-protocol.ts";
 import { pageLanguage, t } from "../i18n/index.ts";
@@ -32,6 +33,24 @@ import { useController } from "./controller.ts";
 const AT_END_PX = 20;
 
 const timeFormat = new Intl.DateTimeFormat(pageLanguage(), { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * Whether a drag carries files, and not text or a link, which the input takes as usual
+ */
+const carriesFiles = (event: DragEvent): boolean => event.dataTransfer.types.includes("Files");
+
+/**
+ * The dropped files, without the folders, which the browser lists as files that cannot be read
+ */
+const droppedFiles = (data: DataTransfer): File[] =>
+  [...data.items].flatMap((item) => {
+    if (item.kind !== "file" || item.webkitGetAsEntry()?.isDirectory) {
+      return [];
+    }
+
+    const file = item.getAsFile();
+    return file == null ? [] : [file];
+  });
 
 /**
  * The height of a preview in the log, fixed so that the log keeps following its end while the image loads
@@ -180,6 +199,10 @@ export const ChatPanel = (props: { onClose: () => void }) => {
   const fileInput = useRef<HTMLInputElement>(null);
   const resumeInput = useRef<HTMLInputElement>(null);
   const resumeFileId = useRef<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  // Entering a child fires "dragenter" before "dragleave" of the parent, so the drag is over the panel while this is
+  // above 0
+  const dragDepth = useRef(0);
 
   // The log follows new messages if it was scrolled to the end
   useLayoutEffect(() => {
@@ -212,8 +235,65 @@ export const ChatPanel = (props: { onClose: () => void }) => {
 
   const reach = chat.total === 0 ? t("chat.alone") : t("chat.reach", { open: chat.open, total: chat.total });
 
+  // Files dropped anywhere on the chat are attached like those of the attach button
+  const onDragEnter = (event: DragEvent) => {
+    if (carriesFiles(event)) {
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragging(true);
+    }
+  };
+
+  const onDragOver = (event: DragEvent) => {
+    if (carriesFiles(event)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = chat.enabled ? "copy" : "none";
+    }
+  };
+
+  const onDragLeave = (event: DragEvent) => {
+    if (carriesFiles(event)) {
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+
+      if (dragDepth.current === 0) {
+        setDragging(false);
+      }
+    }
+  };
+
+  const onDrop = (event: DragEvent) => {
+    if (!carriesFiles(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+
+    if (chat.enabled) {
+      for (const file of droppedFiles(event.dataTransfer)) {
+        controller.attachFile(file);
+      }
+    }
+  };
+
   return (
-    <Stack h="100%" gap={0} data-testid="chat" aria-label={t("chat.title")}>
+    <Stack
+      h="100%"
+      gap={0}
+      pos="relative"
+      data-testid="chat"
+      aria-label={t("chat.title")}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragging && chat.enabled && (
+        <Overlay data-testid="chat-drop" center backgroundOpacity={0.75} zIndex={2} style={{ pointerEvents: "none" }}>
+          <Text fw={600}>{t("chat.drop")}</Text>
+        </Overlay>
+      )}
       <Group justify="space-between" p="sm" pb={0}>
         <Title order={2} size="h4">
           {t("chat.title")}
