@@ -285,6 +285,12 @@
                     ×
                 </button>
             </div>
+            <div id="notice-file-mismatch" class="notice hidden" role="status">
+                <p>同じファイルではありません。名前か大きさが違います。</p>
+                <button class="notice-close" type="button" aria-label="閉じる">
+                    ×
+                </button>
+            </div>
             <div id="notice-call-audio-blocked" class="notice hidden" role="status">
                 <p>ページのどこかをクリックすると、通話が聞こえます。</p>
                 <button class="notice-close" type="button" aria-label="閉じる">
@@ -352,7 +358,10 @@
         <span id="text-file-cancel" class="hidden">中止</span>
         <span id="text-file-save" class="hidden">保存</span>
         <span id="text-file-retry" class="hidden">もう一度</span>
-        <span id="text-file-unreachable" class="hidden">送信者がいません</span>
+        <span id="text-file-unreachable" class="hidden">持っている人がいません</span>
+        <span id="text-file-stopped" class="hidden">送信者が共有をやめました</span>
+        <span id="text-file-ended" class="hidden">再読み込みで共有が終わりました</span>
+        <span id="text-file-resume" class="hidden">選び直す</span>
         <span id="text-file-receiving" class="hidden">{percent}%</span>
         <span id="text-in-call" class="hidden">通話中</span>
         <span id="text-call-muted" class="hidden">ミュート中</span>
@@ -464,6 +473,7 @@
                 ></textarea>
                 <button id="chat-attach" type="button" aria-label="ファイルを添付">📎</button>
                 <input id="chat-file" class="hidden" type="file" multiple />
+                <input id="chat-resume-file" class="hidden" type="file" />
                 <button id="chat-send" type="submit">送信</button>
             </form>
         </aside>

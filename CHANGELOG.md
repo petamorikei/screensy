@@ -69,8 +69,11 @@ The format is based on [Keep a Changelog], and this project adheres to
     the call; a new choice applies during the call. The call marks who is
     speaking, and the connection statistics list its connections.
 -   Files in the chat: the attach button shares files of any size. The
-    others download a file directly from the sender's browser, as long as
-    the sender's page stays open.
+    others download a file directly from a browser that has it: the
+    sender's, or of someone who downloaded it already, so a file stays
+    available while one of them is here. After a reload, the sender chooses
+    a file again to share it again. Received files are always saved as
+    data, with their names cleaned of characters that disguise them.
 -   The menu is available to everyone. It shows the link of the room with a
     copy button, lets viewers set their name too, and lists the participants,
     marking who presents, who is reconnecting, and yourself.

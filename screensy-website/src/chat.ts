@@ -228,6 +228,13 @@ export class Chat {
   }
 
   /**
+   * The author IDs of this page: the current one first, then those of the earlier loads
+   */
+  get ownAuthors(): string[] {
+    return [...this.ownAuthorIds];
+  }
+
+  /**
    * Sends a message to every peer. Those without an open channel get it from the next summary.
    */
   send(text: string, participantId: string, name: string, file?: ChatFile): boolean {
