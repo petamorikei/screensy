@@ -169,6 +169,7 @@ export const en = {
   "file.stopped": "The sender no longer shares it",
   "file.ended": "The reload ended the sharing",
   "file.resume": "Choose it again",
+  "file.enlarge": "Enlarge {name}",
 } as const;
 
 export type MessageKey = keyof typeof en;

@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+-   Images in the chat show as previews, which open larger with a click. A
+    PNG, JPEG, GIF or WebP image up to 10 MiB arrives without a click; a
+    larger one shows its preview once downloaded. The preview depends on the
+    content of the file, not on the type that the sender names, and SVG
+    images never preview.
 -   A version tag creates a GitHub release after the deploy, with the notes
     that GitHub generates from the pull requests.
 

@@ -7,6 +7,7 @@ import type { ChatFile, ChatMessage } from "./chat-protocol.ts";
 import { cleanFileName, FileTransfers } from "./file-transfer.ts";
 import { formatBytes } from "./format.ts";
 import { displayName, t } from "./i18n/index.ts";
+import { fetchesForPreview } from "./image-preview.ts";
 import { IncomingStream } from "./incoming-stream.ts";
 import { showNotice } from "./notices.tsx";
 import { OutgoingStream } from "./outgoing-stream.ts";
@@ -205,7 +206,10 @@ export class RoomController {
     this.mesh.onfilesopen = (peerId: string) => this.files.handleOpen(peerId);
     this.mesh.onfilesmessage = (peerId: string, data: string | ArrayBuffer) => this.files.handleMessage(peerId, data);
     this.files.onchange = () => this.showChat(this.chatMessages);
-    this.chat.onchange = (messages: readonly ChatMessage[]) => this.showChat(messages);
+    this.chat.onchange = (messages: readonly ChatMessage[]) => {
+      this.showChat(messages);
+      this.prefetchPreviews(messages);
+    };
     this.chat.onlive = () => store.set(chatAtom, (chat) => ({ ...chat, liveCount: chat.liveCount + 1 }));
     this.call = new CallController({
       sendMessage: this.sendMessage,
@@ -744,6 +748,19 @@ export class RoomController {
     }
   }
 
+  /**
+   * Fetches the small images of the others without a click, newest first, so that their previews show
+   */
+  private prefetchPreviews(messages: readonly ChatMessage[]): void {
+    const files = messages.flatMap((message) =>
+      message.file != null && !this.chat.isOwn(message) && fetchesForPreview(message.file.type, message.file.size)
+        ? [message.file]
+        : [],
+    );
+
+    this.files.prefetch(files.reverse());
+  }
+
   private showChat(messages: readonly ChatMessage[]): void {
     this.chatMessages = messages;
     store.set(chatAtom, (chat) => ({
@@ -771,6 +788,7 @@ export class RoomController {
       status: "idle",
       progress: 0,
       url: null,
+      preview: this.files.preview(file.id),
     };
 
     if (this.chat.isOwn(message)) {

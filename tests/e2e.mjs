@@ -2046,6 +2046,10 @@ const main = async () => {
     status: row.dataset.status,
     url: row.querySelector("a")?.href ?? null,
     download: row.querySelector("a")?.download ?? null,
+    preview: (() => {
+      const image = row.querySelector('[data-testid="chat-file-preview"] img');
+      return image == null ? null : image.complete && image.naturalWidth > 0 ? "shown" : "loading";
+    })(),
   })))()`;
   const waitFiles = async (page, desc, pred, timeout = 20000) => {
     const end = Date.now() + timeout;
@@ -2087,7 +2091,10 @@ const main = async () => {
       })()`,
     );
   const clickFile = (page, status) =>
-    page.eval(`document.querySelector('[data-testid="chat-file"][data-status="${status}"] button').click()`, true);
+    page.eval(
+      `document.querySelector('[data-testid="chat-file"][data-status="${status}"] [data-testid="chat-file-download"]').click()`,
+      true,
+    );
   const BIG = 20_000_000;
   const filesRoom = `${ORIGIN}/#FilesRoom${Date.now()}`;
   let f1;
@@ -2107,7 +2114,9 @@ const main = async () => {
     // Larger than the 16 MB that the receiver folds into a Blob at once
     await attach(f1, "data.bin", BIG, "application/octet-stream");
     const own = await waitFiles(f1, "F1 shows its file", (files) => files.length === 1);
-    assert.deepEqual(shown(own), [{ name: "data.bin (20.0 MB)", status: "own", url: null, download: null }]);
+    assert.deepEqual(shown(own), [
+      { name: "data.bin (20.0 MB)", status: "own", url: null, download: null, preview: null },
+    ]);
     await waitFiles(f2, "F2 can download it", (files) => files[0]?.status === "idle");
 
     await clickFile(f2, "idle");
@@ -2163,7 +2172,7 @@ const main = async () => {
     assert.equal(f3Files[1].status, "idle", "the HTML file is still with F2");
 
     await f1.eval(
-      `document.querySelector('[data-testid="chat-file"][data-file-id="${reportId}"] button').click()`,
+      `document.querySelector('[data-testid="chat-file"][data-file-id="${reportId}"] [data-testid="chat-file-resume"]').click()`,
       true,
     );
     await attach(f1, "report.txt", 1999, "text/plain", "chat-resume-input");
@@ -2172,7 +2181,7 @@ const main = async () => {
     await waitFiles(f1, "F1 shares the report again", (files) => files[2]?.status === "own");
     await waitFiles(f2, "F2 can download the report again", (files) => files[2]?.status === "idle");
     await f2.eval(
-      `document.querySelector('[data-testid="chat-file"][data-file-id="${reportId}"] button').click()`,
+      `document.querySelector('[data-testid="chat-file"][data-file-id="${reportId}"] [data-testid="chat-file-download"]').click()`,
       true,
     );
     const done = await waitFiles(f2, "F2 downloaded the report", (files) => files[2]?.status === "done");
@@ -2199,6 +2208,122 @@ const main = async () => {
       }
     },
   );
+
+  // --- Image previews: small raster images arrive without a click and show in the chat ---
+
+  // Attaches a file of the given content: "png" for a real PNG image drawn on a canvas, "png-header:<size>" for that
+  // many bytes after a PNG signature, or a text
+  const attachContent = (page, name, type, content) =>
+    page.eval(
+      `(async () => {
+        const content = ${JSON.stringify(content)};
+        let blob;
+        if (content === "png") {
+          const canvas = document.createElement("canvas");
+          canvas.width = 64;
+          canvas.height = 48;
+          const context = canvas.getContext("2d");
+          context.fillStyle = "rgb(255, 0, 255)";
+          context.fillRect(0, 0, 64, 48);
+          blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        } else if (content.startsWith("png-header:")) {
+          const bytes = new Uint8Array(Number(content.slice("png-header:".length)));
+          bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+          blob = new Blob([bytes]);
+        } else {
+          blob = new Blob([content]);
+        }
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([blob], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));
+        const input = $t("chat-file-input");
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`,
+    );
+  // The type that the page gets for the URL of an image
+  const urlType = (page, url) =>
+    page.eval(`fetch(${JSON.stringify(url)}).then((response) => response.headers.get("content-type"))`);
+  const previewUrl = (page, index) =>
+    page.eval(`$$t("chat-file")[${index}].querySelector('[data-testid="chat-file-preview"] img').src`);
+  const imagesRoom = `${ORIGIN}/#ImagesRoom${Date.now()}`;
+  let i1;
+  let i2;
+
+  await step("images: the sender sees the preview at once, and the others get it without a click", async () => {
+    i1 = await newPage(cdp, "I1", { initExtra: withName("Ivy") });
+    i2 = await newPage(cdp, "I2", { initExtra: withName("Jon") });
+    await i1.goto(imagesRoom);
+    await i2.goto(imagesRoom);
+    await waitChat(i1, "I1 reaches I2", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+    await waitChat(i2, "I2 reaches I1", (c) => c.enabled && c.reach === "Reaches 1 of 1 people");
+
+    await attachContent(i1, "photo.png", "image/png", "png");
+    await waitFiles(i1, "I1 previews its image", (files) => files[0]?.status === "own" && files[0].preview === "shown");
+    const received = await waitFiles(
+      i2,
+      "I2 fetched and previews the image",
+      (files) => files[0]?.status === "done" && files[0].preview === "shown",
+    );
+    // The preview has the type of its bytes; the saved file stays data
+    assert.equal(await urlType(i2, await previewUrl(i2, 0)), "image/png");
+    assert.equal((await fetchedFile(i2, received[0].url)).type, "application/octet-stream");
+
+    await i2.eval(`$$t("chat-file-preview")[0].click()`, true);
+    await waitEval(
+      i2,
+      "the image opens larger",
+      `(() => {
+      const image = $t("image-viewer");
+      return image != null && image.naturalWidth === 64;
+    })()`,
+      (open) => open === true,
+    );
+    await i2.shot("image-preview");
+    await i2.eval(`document.querySelector(".mantine-Modal-close").click()`, true);
+    await waitEval(i2, "the image closes", `$t("image-viewer") == null`, (closed) => closed === true);
+
+    // A reload forgets the received image; it arrives again from the history, without a click
+    await i2.reload();
+    await waitChat(i2, "I2 back", (c) => c.enabled && c.reach === "Reaches 1 of 1 people", 15000);
+    await waitFiles(
+      i2,
+      "I2 fetched the image again",
+      (files) => files[0]?.status === "done" && files[0].preview === "shown",
+    );
+  });
+
+  await step("images: only raster images preview, and SVG or large images wait for a click", async () => {
+    // HTML that names itself a PNG: fetched as a hint, but its bytes are no image
+    await attachContent(i1, "fake.png", "image/png", "<script>alert(1)</script>");
+    const fake = await waitFiles(i2, "I2 fetched the fake image", (files) => files[1]?.status === "done");
+    await sleep(500);
+    assert.equal((await i2.eval(FILES))[1].preview, null, "no preview of HTML");
+    assert.equal((await fetchedFile(i2, fake[1].url)).type, "application/octet-stream");
+
+    // SVG could run scripts in this page's origin, so it never previews, also for its sender
+    await attachContent(i1, "vector.svg", "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    // Larger than the 10 MiB that the receiver fetches without a click
+    await attachContent(i1, "big.png", "image/png", `png-header:${11 * 1024 * 1024}`);
+    await waitFiles(i2, "I2 sees the SVG and the large image", (files) => files.length === 4);
+    await sleep(1500);
+    const waiting = await i2.eval(FILES);
+    assert.deepEqual(
+      waiting.slice(2).map((file) => [file.status, file.preview]),
+      [
+        ["idle", null],
+        ["idle", null],
+      ],
+      "not fetched without a click",
+    );
+    assert.equal((await i1.eval(FILES))[2].preview, null, "the sender's SVG has no preview either");
+    await clickFile(i2, "idle");
+    await waitFiles(i2, "I2 downloaded the SVG", (files) => files[2]?.status === "done");
+    await sleep(500);
+    assert.equal((await i2.eval(FILES))[2].preview, null, "a downloaded SVG has no preview");
+    for (const page of [i1, i2]) {
+      await cdp.send("Target.closeTarget", { targetId: page.targetId });
+    }
+  });
 
   // --- Voice call: one stream per participant in the call, to everyone in the room ---
 
