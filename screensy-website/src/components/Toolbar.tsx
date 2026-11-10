@@ -36,13 +36,17 @@ const ToolButton = (props: {
   disabled?: boolean;
   pressed?: boolean;
   color?: string;
+  /**
+   * Filled for a button that always stands out, like leaving the call; otherwise filled only while pressed
+   */
+  filled?: boolean;
 }) => (
   <Tooltip label={props.label}>
     <ActionIcon
       data-testid={props.testId}
       aria-label={props.label}
       aria-pressed={props.pressed}
-      variant={props.pressed ? "filled" : "default"}
+      variant={props.filled || props.pressed ? "filled" : "default"}
       color={props.color}
       size="lg"
       disabled={props.disabled}
@@ -197,6 +201,7 @@ const CallControls = () => {
         label={t("call.leave")}
         icon={<IconPhoneOff size={ICON_SIZE} />}
         color="red"
+        filled
         onClick={() => controller.call.leave()}
       />
     </>

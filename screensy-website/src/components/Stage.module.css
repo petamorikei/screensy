@@ -80,10 +80,6 @@
   object-fit: contain;
 }
 
-.tile[data-kind="camera"] .video {
-  object-fit: cover;
-}
-
 /* The own camera shows like a mirror, as people expect to see themselves */
 .tile[data-kind="camera"][data-self] .video {
   transform: scaleX(-1);
