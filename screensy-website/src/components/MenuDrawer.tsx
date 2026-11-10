@@ -5,7 +5,6 @@ import {
   Drawer,
   Group,
   NativeSelect,
-  NumberInput,
   Paper,
   Stack,
   Table,
@@ -24,12 +23,11 @@ import type { MessageKey } from "../i18n/index.ts";
 import { t } from "../i18n/index.ts";
 import type { QualitySettings } from "../quality.ts";
 import {
+  BITRATES_MBPS,
   BitrateSchema,
   DegradationSchema,
   FrameRateSchema,
-  MAX_BITRATE_MBPS,
   MaxHeightSchema,
-  MIN_BITRATE_MBPS,
   RESOLUTION_HEIGHTS,
 } from "../quality.ts";
 import { devicesAtom, ownNameAtom, participantsAtom, qualityAtom, statsAtom } from "../state/atoms.ts";
@@ -231,13 +229,12 @@ const DevicesSection = () => {
 };
 
 /**
- * The quality of the own presentations. An invalid value is not applied, and the input goes back.
+ * The quality of the own presentations. A value that is not one of the choices is not applied.
  */
 const QualitySection = () => {
   const controller = useController();
   const quality = useAtomValue(qualityAtom);
   const settings = quality.settings;
-  const [bitrate, setBitrate] = useState<string | number | null>(null);
 
   if (!quality.visible) {
     return null;
@@ -247,15 +244,6 @@ const QualitySection = () => {
     if (patch != null) {
       controller.changeQuality({ ...settings, ...patch });
     }
-  };
-
-  const commitBitrate = () => {
-    if (bitrate != null) {
-      const parsed = BitrateSchema.safeParse(Number(bitrate));
-      change(parsed.success ? { maxBitrateMbps: parsed.data } : null);
-    }
-
-    setBitrate(null);
   };
 
   return (
@@ -287,21 +275,14 @@ const QualitySection = () => {
           change(maxHeight.success ? { maxHeight: maxHeight.data } : null);
         }}
       />
-      <NumberInput
+      <NativeSelect
         data-testid="quality-bitrate"
         label={t("menu.bitrate")}
-        min={MIN_BITRATE_MBPS}
-        max={MAX_BITRATE_MBPS}
-        step={0.1}
-        decimalScale={1}
-        clampBehavior="none"
-        value={bitrate ?? settings.maxBitrateMbps}
-        onChange={setBitrate}
-        onBlur={commitBitrate}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
+        value={settings.maxBitrateMbps.toString()}
+        data={BITRATES_MBPS.map((mbps) => ({ value: mbps.toString(), label: `${mbps} Mbps` }))}
+        onChange={(event) => {
+          const maxBitrateMbps = BitrateSchema.safeParse(Number(event.currentTarget.value));
+          change(maxBitrateMbps.success ? { maxBitrateMbps: maxBitrateMbps.data } : null);
         }}
       />
       <NativeSelect

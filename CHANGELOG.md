@@ -41,11 +41,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 -   A "Hide screen" button turns the presentation black and silent, for the
     viewers and in the presenter's own preview alike. Viewers see that the
     presenter has hidden their screen.
--   A menu with quality settings for presenting: the frame rate (60 or 30
-    fps), the resolution (the original one or a common height), the maximum
-    bitrate, and the priority when the connection is slow (resolution,
-    frame rate or a balance). The browser remembers them, and changes apply
-    at once.
+-   A menu with quality settings for presenting: the frame rate (60 fps by
+    default, or 30), the resolution (the original one or a common height),
+    the maximum bitrate (from 1 to 100 Mbps), and the priority when the
+    connection is slow (resolution, frame rate or a balance). The browser
+    remembers them, and changes apply at once.
 -   Each presentation has its own mute and full-screen buttons. While a
     presenter shares sound that may contain the other presenters' sound, they
     are muted on that presenter's page, so that it does not echo.
