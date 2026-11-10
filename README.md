@@ -280,7 +280,9 @@ Object) pass. It needs two secrets in the repository:
 
 Because a deploy ends every room, the workflow runs only when you start it
 (Actions → Deploy → Run workflow, or `gh workflow run deploy.yml`) and when
-you push a version tag (`v*`), never for every push.
+you push a version tag (`v*`), never for every push. For a tag, it then
+creates a GitHub release, with the notes that GitHub generates from the pull
+requests since the previous tag.
 
 Things to know:
 
