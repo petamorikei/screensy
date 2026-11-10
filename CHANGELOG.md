@@ -5,7 +5,7 @@ All notable changes to the screensy project will be documented in this file.
 The format is based on [Keep a Changelog], and this project adheres to
 [Semantic Versioning].
 
-## Unreleased
+## 2.0.0 - 2026-11-10
 
 ### Added
 
@@ -114,8 +114,7 @@ The format is based on [Keep a Changelog], and this project adheres to
     language. The stylesheet is now "screensy.css", built with the script.
 -   Replace the signaling protocol. The fixed broadcaster and viewer roles are
     gone. The server sends the state of the room to every participant and
-    relays WebRTC messages per stream. The protocol is ready for several
-    presenters at once, but the server allows one for now.
+    relays WebRTC messages per stream.
 -   Denying access to the screen now shows a notice that can be closed,
     instead of a full-page message. The person stays in the room as a viewer.
 -   The website sends `Cache-Control: no-cache`, so that browsers do not run an
