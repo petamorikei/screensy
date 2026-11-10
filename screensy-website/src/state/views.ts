@@ -34,6 +34,14 @@ export type TileStatusId =
 export type TileKind = "screen" | "camera";
 
 /**
+ * The state in the call of the participant whom a tile or a badge shows
+ */
+export interface CallStateView {
+  muted: boolean;
+  speaking: boolean;
+}
+
+/**
  * One tile on the stage: a presentation, or a camera
  */
 export interface TileView {
@@ -43,15 +51,19 @@ export interface TileView {
    */
   key: string;
   kind: TileKind;
+  /**
+   * Whose tile it is, or null for the own presentation before the room knows this client
+   */
+  participantId: string | null;
   name: string;
   self: boolean;
   stream: MediaStream | null;
   status: TileStatusId | null;
   countdown: string | null;
   /**
-   * The participant speaks in the call: only for cameras
+   * The participant in the call, or null outside of it
    */
-  speaking: boolean;
+  call: CallStateView | null;
 }
 
 export interface ToolbarView {
@@ -138,12 +150,10 @@ export interface ChatView {
   liveCount: number;
 }
 
-export interface CallMemberView {
+export interface CallMemberView extends CallStateView {
   id: string;
   name: string;
-  muted: boolean;
-  camera: boolean;
-  speaking: boolean;
+  self: boolean;
 }
 
 export interface CallView {

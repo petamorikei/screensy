@@ -258,8 +258,8 @@ export class CallController {
       ? calls.map((call) => ({
           id: call.participantId,
           name: nameOf(call.participantId),
+          self: call.participantId === selfId,
           muted: call.muted,
-          camera: call.camera,
           speaking: this.isSpeaking(call.participantId),
         }))
       : [];

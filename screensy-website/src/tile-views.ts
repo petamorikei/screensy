@@ -30,27 +30,40 @@ export interface TileContext {
   speaking: (participantId: string) => boolean;
 }
 
-export const ownTile = (context: TileContext): TileView => ({
+/**
+ * The state in the call of a participant, or null outside of it
+ */
+const callStateOf = (context: TileContext, calls: CallState[], participantId: string | null) => {
+  const call = calls.find((call) => call.participantId === participantId);
+  return call == null ? null : { muted: call.muted, speaking: context.speaking(call.participantId) };
+};
+
+/**
+ * The own presentation. Without the room state (while the server is away), it shows no call.
+ */
+export const ownTile = (context: TileContext, state: MessageRoomState | null): TileView => ({
   key: context.selfId ?? "self",
   kind: "screen",
+  participantId: context.selfId,
   name: "",
   self: true,
   stream: context.outgoing?.previewStream ?? null,
   status: context.outgoing?.hidden ? "self-hidden" : null,
   countdown: null,
-  speaking: false,
+  call: callStateOf(context, state?.calls ?? [], context.selfId),
 });
 
 const remoteTile = (context: TileContext, state: MessageRoomState, presenter: PresenterState): TileView => {
   const tile: TileView = {
     key: presenter.participantId,
     kind: "screen",
+    participantId: presenter.participantId,
     name: context.nameOf(presenter.participantId),
     self: false,
     stream: null,
     status: null,
     countdown: null,
-    speaking: false,
+    call: callStateOf(context, state.calls, presenter.participantId),
   };
 
   if (presenter.status === "reconnecting") {
@@ -92,7 +105,7 @@ export const tileViews = (context: TileContext, state: MessageRoomState): TileVi
     if (presenter.participantId === context.selfId) {
       // Without a capture, the own seat is waiting in the resume dialog
       if (context.outgoing != null) {
-        tiles.push(ownTile(context));
+        tiles.push(ownTile(context, state));
         ownTileShown = true;
       }
 
@@ -103,13 +116,13 @@ export const tileViews = (context: TileContext, state: MessageRoomState): TileVi
   }
 
   if (context.outgoing != null && !ownTileShown) {
-    tiles.push(ownTile(context));
+    tiles.push(ownTile(context, state));
   }
 
   return tiles;
 };
 
-const cameraTile = (context: TileContext, call: CallState): TileView | null => {
+const cameraTile = (context: TileContext, state: MessageRoomState, call: CallState): TileView | null => {
   const self = call.participantId === context.selfId;
   const stream = self ? context.ownCamera : context.incomingStream(call.streamId);
 
@@ -121,12 +134,13 @@ const cameraTile = (context: TileContext, call: CallState): TileView | null => {
   return {
     key: `camera:${call.participantId}`,
     kind: "camera",
+    participantId: call.participantId,
     name: self ? "" : context.nameOf(call.participantId),
     self,
     stream,
     status: stream == null ? "joining" : null,
     countdown: null,
-    speaking: context.speaking(call.participantId),
+    call: callStateOf(context, state.calls, call.participantId),
   };
 };
 
@@ -135,6 +149,6 @@ const cameraTile = (context: TileContext, call: CallState): TileView | null => {
  */
 export const cameraTileViews = (context: TileContext, state: MessageRoomState): TileView[] =>
   state.calls.flatMap((call) => {
-    const tile = call.camera ? cameraTile(context, call) : null;
+    const tile = call.camera ? cameraTile(context, state, call) : null;
     return tile == null ? [] : [tile];
   });
