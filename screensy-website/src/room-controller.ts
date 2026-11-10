@@ -5,7 +5,7 @@ import { capturesOwnAudio } from "./capture.ts";
 import { Chat } from "./chat.ts";
 import type { ChatFile, ChatMessage } from "./chat-protocol.ts";
 import { showPopup } from "./dom.ts";
-import { FileTransfers } from "./file-transfer.ts";
+import { cleanFileName, FileTransfers } from "./file-transfer.ts";
 import { formatBytes } from "./format.ts";
 import { IncomingStream } from "./incoming-stream.ts";
 import { OutgoingStream } from "./outgoing-stream.ts";
@@ -32,6 +32,11 @@ import type { DialogMode, StatusId, TileView } from "./ui/types.ts";
 import { Ui } from "./ui/ui.ts";
 
 const STATS_INTERVAL_MS = 1000;
+
+/**
+ * The name of a file as a chat message carries it: within the limit of the message. The size is not limited.
+ */
+const chatFileName = (file: File): string => file.name.slice(0, 255) || "file";
 
 /**
  * The participant who sends a stream that this client may receive: a live presenter, or a participant in the call
@@ -177,7 +182,7 @@ export class RoomController {
       this.chat.handlePeerOpen(peerId);
       this.render();
     };
-    this.files = new FileTransfers(this.mesh, this.chat.authorId);
+    this.files = new FileTransfers(this.mesh, () => this.chat.ownAuthors);
     this.mesh.onclose = (peerId: string) => {
       this.files.handleClose(peerId);
       this.render();
@@ -190,6 +195,7 @@ export class RoomController {
     this.ui.chat.onattach = (file: File) => this.attachFile(file);
     this.ui.chat.ondownload = (fileId: string) => this.downloadFile(fileId);
     this.ui.chat.oncanceldownload = (fileId: string) => this.files.cancel(fileId);
+    this.ui.chat.onresume = (fileId: string, file: File) => this.resumeFile(fileId, file);
     this.chat.onlive = () => this.ui.chat.addUnread();
     this.ui.chat.onsend = (text: string) => this.sendChat(text);
     this.calls = new CallController({
@@ -687,8 +693,7 @@ export class RoomController {
 
     const shared: ChatFile = {
       id: this.files.share(file),
-      // Within the limits of the chat message; the size and the content are not limited
-      name: file.name.slice(0, 255) || "file",
+      name: chatFileName(file),
       size: file.size,
       type: file.type.slice(0, 255),
     };
@@ -696,11 +701,31 @@ export class RoomController {
     return this.chat.send("", self.id, self.name, shared);
   }
 
+  /**
+   * Shares the file of an own message again, after a reload forgot it: the person chooses it again, and it has to
+   * have the same name and size
+   */
+  private resumeFile(fileId: string, file: File): void {
+    const message = this.chatMessages.find((message) => message.file?.id === fileId);
+
+    if (message?.file == null || !this.chat.isOwn(message)) {
+      return;
+    }
+
+    if (chatFileName(file) !== message.file.name || file.size !== message.file.size) {
+      this.ui.notices.showNotice("notice-file-mismatch");
+      return;
+    }
+
+    this.files.share(file, fileId);
+    this.showChat(this.chatMessages);
+  }
+
   private downloadFile(fileId: string): void {
     const message = this.chatMessages.find((message) => message.file?.id === fileId);
 
     if (message?.file != null) {
-      this.files.download(message.authorId, message.file);
+      this.files.download(message.file);
     }
   }
 
@@ -723,7 +748,8 @@ export class RoomController {
   private fileView(message: ChatMessage, file: ChatFile): ChatFileView {
     const view: ChatFileView = {
       id: file.id,
-      name: file.name,
+      // The name comes from someone else
+      name: cleanFileName(file.name),
       size: formatBytes(file.size),
       status: "idle",
       progress: 0,
@@ -731,7 +757,8 @@ export class RoomController {
     };
 
     if (this.chat.isOwn(message)) {
-      return { ...view, status: "own" };
+      // A reload forgets the files that this page shared
+      return { ...view, status: this.files.holds(file.id) ? "own" : "ended" };
     }
 
     const state = this.files.state(file.id);
@@ -742,11 +769,12 @@ export class RoomController {
       case "done":
         return { ...view, status: "done", url: state.url };
       default:
-        if (!this.files.isReachable(message.authorId)) {
-          return { ...view, status: "unreachable" };
+        if (this.files.isAvailable(file.id)) {
+          return { ...view, status: state.status };
         }
 
-        return { ...view, status: state.status };
+        // Nobody here has it: the sender stopped sharing it with a reload, or left
+        return { ...view, status: this.files.isAuthorHere(message.authorId) ? "stopped" : "unreachable" };
     }
   }
 

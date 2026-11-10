@@ -54,6 +54,7 @@ export type NoticeId =
   | "notice-microphone-denied"
   | "notice-call-audio-blocked"
   | "notice-camera-denied"
-  | "notice-cameras-full";
+  | "notice-cameras-full"
+  | "notice-file-mismatch";
 
 export type DialogMode = "start" | "resume";

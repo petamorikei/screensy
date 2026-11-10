@@ -1975,6 +1975,7 @@ const main = async () => {
   // --- Files: shared in the chat, fetched from the sender on the files channel of the mesh ---
 
   const FILES = `(() => [...document.querySelectorAll("#chat-log .chat-file")].map((row) => ({
+    id: row.dataset.fileId,
     name: row.querySelector(".chat-file-name").textContent,
     status: row.dataset.status,
     url: row.querySelector("a")?.href ?? null,
@@ -1997,14 +1998,14 @@ const main = async () => {
     for (let i = 0; i < size; i++) sum = (sum * 31 + fileByte(i)) >>> 0;
     return sum;
   };
-  const attach = (page, name, size, type) =>
+  const attach = (page, name, size, type, input = "chat-file") =>
     page.eval(
       `(() => {
         const bytes = new Uint8Array(${size});
         for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7 + (i >> 11)) & 255;
         const transfer = new DataTransfer();
         transfer.items.add(new File([bytes], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} }));
-        const input = document.getElementById("chat-file");
+        const input = document.getElementById(${JSON.stringify(input)});
         input.files = transfer.files;
         input.dispatchEvent(new Event("change"));
       })()`,
@@ -2026,6 +2027,9 @@ const main = async () => {
   let f1;
   let f2;
   let f3;
+  let f4;
+  // The files without their IDs, to compare
+  const shown = (files) => files.map(({ id: _id, ...rest }) => rest);
 
   await step("files: a shared file shows in the others' chat, and downloads whole from the sender", async () => {
     f1 = await newPage(cdp, "F1", { initExtra: withName("Fay") });
@@ -2037,7 +2041,7 @@ const main = async () => {
     // Larger than the 16 MB that the receiver folds into a Blob at once
     await attach(f1, "data.bin", BIG, "application/octet-stream");
     const own = await waitFiles(f1, "F1 shows its file", (files) => files.length === 1);
-    assert.deepEqual(own, [{ name: "📎 data.bin (20.0 MB)", status: "own", url: null, download: null }]);
+    assert.deepEqual(shown(own), [{ name: "📎 data.bin (20.0 MB)", status: "own", url: null, download: null }]);
     await waitFiles(f2, "F2 can download it", (files) => files[0]?.status === "idle");
 
     await clickFile(f2, "idle");
@@ -2053,7 +2057,7 @@ const main = async () => {
     });
   });
 
-  await step("files: a late joiner sees the file and gets it from the sender", async () => {
+  await step("files: a late joiner sees the file and gets it from one of those who have it", async () => {
     f3 = await newPage(cdp, "F3", { initExtra: withName("Hal") });
     await f3.goto(filesRoom);
     await waitFiles(f3, "F3 can download it", (files) => files[0]?.status === "idle");
@@ -2062,16 +2066,67 @@ const main = async () => {
     assert.equal((await fetchedFile(f3, done[0].url)).sum, checksum(BIG));
   });
 
-  await step("files: once the sender leaves, the file can no longer be fetched", async () => {
-    await attach(f1, "notes.txt", 1000, "text/plain");
-    await waitFiles(f2, "F2 sees the second file", (files) => files[1]?.status === "idle");
-    await cdp.send("Target.closeTarget", { targetId: f1.targetId });
-    const gone = await waitFiles(f2, "F2 cannot fetch it", (files) => files[1]?.status === "unreachable");
-    assert.equal(gone[0].status, "done", "the downloaded file stays");
-    for (const page of [f2, f3]) {
-      await cdp.send("Target.closeTarget", { targetId: page.targetId });
-    }
+  await step("files: a received file is saved as data, under a cleaned name", async () => {
+    // An HTML file that would run in this page's origin if opened from a Blob of its own type, under a name that
+    // looks like a PDF
+    await attach(f1, "evil\u202Efdp.html", 100, "text/html");
+    const files = await waitFiles(f2, "F2 sees the HTML file", (files) => files[1]?.status === "idle");
+    assert.equal(files[1].name, "📎 evilfdp.html (100 B)", "without the right-to-left override");
+    await clickFile(f2, "idle");
+    const done = await waitFiles(f2, "F2 downloaded it", (files) => files[1]?.status === "done");
+    assert.equal(done[1].download, "evilfdp.html");
+    assert.deepEqual(await fetchedFile(f2, done[1].url), {
+      size: 100,
+      sum: checksum(100),
+      type: "application/octet-stream",
+    });
   });
+
+  await step("files: a reload ends the sender's sharing, until the sender chooses the file again", async () => {
+    await attach(f1, "report.txt", 2000, "text/plain");
+    const before = await waitFiles(f2, "F2 sees the report", (files) => files[2]?.status === "idle");
+    const reportId = before[2].id;
+    await f1.reload();
+    await waitChat(f1, "F1 back", (c) => c.enabled && c.reach === "Reaches 2 of 2 people", 15000);
+    const ended = await waitFiles(f1, "F1's report ended", (files) => files[2]?.status === "ended");
+    assert.equal(ended[0].status, "ended", "the big file too");
+    // The sender is here, but nobody has the report; the big file is still with F2 and F3
+    const f2Files = await waitFiles(f2, "F2 sees the report stopped", (files) => files[2]?.status === "stopped");
+    assert.equal(f2Files[0].status, "done");
+    const f3Files = await waitFiles(f3, "F3 sees the report stopped", (files) => files[2]?.status === "stopped");
+    assert.equal(f3Files[1].status, "idle", "the HTML file is still with F2");
+
+    await f1.eval(`document.querySelector('.chat-file[data-file-id="${reportId}"] button').click()`, true);
+    await attach(f1, "report.txt", 1999, "text/plain", "chat-resume-file");
+    await f1.waitFor("F1 told that it is another file", (s) => s.notices.includes("notice-file-mismatch"));
+    await attach(f1, "report.txt", 2000, "text/plain", "chat-resume-file");
+    await waitFiles(f1, "F1 shares the report again", (files) => files[2]?.status === "own");
+    await waitFiles(f2, "F2 can download the report again", (files) => files[2]?.status === "idle");
+    await f2.eval(`document.querySelector('.chat-file[data-file-id="${reportId}"] button').click()`, true);
+    const done = await waitFiles(f2, "F2 downloaded the report", (files) => files[2]?.status === "done");
+    assert.equal((await fetchedFile(f2, done[2].url)).sum, checksum(2000));
+  });
+
+  await step(
+    "files: when the sender leaves, a file stays with those who have it, and the others show as gone",
+    async () => {
+      await attach(f1, "notes.txt", 1000, "text/plain");
+      await waitFiles(f2, "F2 sees the notes", (files) => files[3]?.status === "idle");
+      await cdp.send("Target.closeTarget", { targetId: f1.targetId });
+      const gone = await waitFiles(f2, "F2 cannot fetch the notes", (files) => files[3]?.status === "unreachable");
+      assert.equal(gone[0].status, "done", "the downloaded file stays");
+      // A newcomer gets the big file from F2 or F3
+      f4 = await newPage(cdp, "F4", { initExtra: withName("Ida") });
+      await f4.goto(filesRoom);
+      await waitFiles(f4, "F4 can download the big file", (files) => files[0]?.status === "idle");
+      await clickFile(f4, "idle");
+      const done = await waitFiles(f4, "F4 downloaded it", (files) => files[0]?.status === "done", 60000);
+      assert.equal((await fetchedFile(f4, done[0].url)).sum, checksum(BIG));
+      for (const page of [f2, f3, f4]) {
+        await cdp.send("Target.closeTarget", { targetId: page.targetId });
+      }
+    },
+  );
 
   // --- Voice call: one stream per participant in the call, to everyone in the room ---
 

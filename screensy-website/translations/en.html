@@ -301,6 +301,12 @@
                     ×
                 </button>
             </div>
+            <div id="notice-file-mismatch" class="notice hidden" role="status">
+                <p>That is not the same file: its name or size differs.</p>
+                <button class="notice-close" type="button" aria-label="Close">
+                    ×
+                </button>
+            </div>
             <div id="notice-call-audio-blocked" class="notice hidden" role="status">
                 <p>Click anywhere on the page to hear the call.</p>
                 <button class="notice-close" type="button" aria-label="Close">
@@ -371,7 +377,10 @@
         <span id="text-file-cancel" class="hidden">Cancel</span>
         <span id="text-file-save" class="hidden">Save</span>
         <span id="text-file-retry" class="hidden">Try again</span>
-        <span id="text-file-unreachable" class="hidden">The sender is not here</span>
+        <span id="text-file-unreachable" class="hidden">Nobody here has it</span>
+        <span id="text-file-stopped" class="hidden">The sender no longer shares it</span>
+        <span id="text-file-ended" class="hidden">The reload ended the sharing</span>
+        <span id="text-file-resume" class="hidden">Choose it again</span>
         <span id="text-file-receiving" class="hidden">{percent}%</span>
         <span id="text-in-call" class="hidden">in call</span>
         <span id="text-call-muted" class="hidden">muted</span>
@@ -485,6 +494,7 @@
                 ></textarea>
                 <button id="chat-attach" type="button" aria-label="Attach files">📎</button>
                 <input id="chat-file" class="hidden" type="file" multiple />
+                <input id="chat-resume-file" class="hidden" type="file" />
                 <button id="chat-send" type="submit">Send</button>
             </form>
         </aside>

@@ -11,10 +11,11 @@ export interface ChatFileView {
    */
   size: string;
   /**
-   * "own": this page shared it. "unreachable": its sender is not connected. "receiving" has the progress, from 0 to 1,
-   * and "done" the URL to save it from.
+   * "own": this page shares it. "ended": this page shared it before a reload, which forgot it. "stopped": nobody here
+   * has it, but its sender is here. "unreachable": nobody here has it. "receiving" has the progress, from 0 to 1, and
+   * "done" the URL to save it from.
    */
-  status: "own" | "unreachable" | "idle" | "receiving" | "done" | "failed";
+  status: "own" | "ended" | "stopped" | "unreachable" | "idle" | "receiving" | "done" | "failed";
   progress: number;
   url: string | null;
 }
@@ -56,6 +57,10 @@ export class ChatPanel {
   public onattach: ((file: File) => boolean) | null = null;
   public ondownload: ((fileId: string) => void) | null = null;
   public oncanceldownload: ((fileId: string) => void) | null = null;
+  /**
+   * The file chosen again for an own message whose sharing ended
+   */
+  public onresume: ((fileId: string, file: File) => void) | null = null;
 
   private readonly button: HTMLButtonElement;
   private readonly unread: HTMLElement;
@@ -69,7 +74,16 @@ export class ChatPanel {
   private readonly timeFormat: Intl.DateTimeFormat;
   private readonly attachButton: HTMLButtonElement;
   private readonly fileInput: HTMLInputElement;
-  private readonly fileTexts: Record<"download" | "cancel" | "save" | "retry" | "unreachable" | "receiving", string>;
+  private readonly resumeInput: HTMLInputElement;
+  private readonly fileTexts: Record<
+    "download" | "cancel" | "save" | "retry" | "unreachable" | "stopped" | "ended" | "resume" | "receiving",
+    string
+  >;
+
+  /**
+   * The file of the own message that "Choose again" is for
+   */
+  private resumeFileId: string | null = null;
   private unreadCount = 0;
 
   constructor() {
@@ -89,6 +103,7 @@ export class ChatPanel {
 
     this.attachButton = getElement("chat-attach", HTMLButtonElement);
     this.fileInput = getElement("chat-file", HTMLInputElement);
+    this.resumeInput = getElement("chat-resume-file", HTMLInputElement);
     const text = (id: string) => getElement(id, HTMLElement).textContent.trim();
     this.fileTexts = {
       download: text("text-file-download"),
@@ -96,6 +111,9 @@ export class ChatPanel {
       save: text("text-file-save"),
       retry: text("text-file-retry"),
       unreachable: text("text-file-unreachable"),
+      stopped: text("text-file-stopped"),
+      ended: text("text-file-ended"),
+      resume: text("text-file-resume"),
       receiving: text("text-file-receiving"),
     };
 
@@ -106,6 +124,16 @@ export class ChatPanel {
       }
 
       this.fileInput.value = "";
+    });
+
+    this.resumeInput.addEventListener("change", () => {
+      const file = this.resumeInput.files?.[0];
+
+      if (file != null && this.resumeFileId != null) {
+        this.onresume?.(this.resumeFileId, file);
+      }
+
+      this.resumeInput.value = "";
     });
 
     this.button.addEventListener("click", () => this.setOpen(!this.isOpen));
@@ -244,6 +272,16 @@ export class ChatPanel {
 
     switch (file.status) {
       case "own":
+        break;
+      case "ended":
+        note(this.fileTexts.ended);
+        button(this.fileTexts.resume, () => {
+          this.resumeFileId = file.id;
+          this.resumeInput.click();
+        });
+        break;
+      case "stopped":
+        note(this.fileTexts.stopped);
         break;
       case "unreachable":
         note(this.fileTexts.unreachable);
