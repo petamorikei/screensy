@@ -1027,7 +1027,7 @@ export class RoomController {
 
     // While the server is away, only the own preview stays
     if (!ready && this.outgoing != null) {
-      tiles.push(ownTile(this.tileContext()));
+      tiles.push(ownTile(this.tileContext(), null));
     }
 
     let status: StatusId | null = null;

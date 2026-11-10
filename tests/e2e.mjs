@@ -2202,16 +2202,18 @@ const main = async () => {
 
   // --- Voice call: one stream per participant in the call, to everyone in the room ---
 
-  // The members of the call read as the name, then 📷 for a camera and 🔇 for a muted microphone
+  // The badges of the tiles and of the row of voices read as what they show (🖥 a screen, 📷 a camera, ☎ the voice
+  // alone), the name and 🔇 for a muted microphone
+  const BADGES = `[...$$t("tile-name"), ...$$t("voice-member")].map((badge) => ({ screen: "🖥", camera: "📷", voice: "☎" })[badge.dataset.kind] + badge.querySelector(".mantine-Badge-label").textContent + (badge.hasAttribute("data-muted") ? "🔇" : ""))`;
   const CALL = `(() => {
     const shown = (id) => $t(id) != null;
     const microphone = window.__microphones.at(-1)?.getAudioTracks()[0];
     const screenAudio = window.__captures.at(-1)?.getAudioTracks()[0];
     return {
       join: shown("call-join"),
-      muted: shown("call-mute") ? $t("call-mute").getAttribute("aria-pressed") === "true" : null,
+      muted: shown("call-mute") ? $t("call-mute").getAttribute("aria-pressed") === "false" : null,
       leave: shown("call-leave"),
-      bar: shown("call-members") ? $$t("call-member").map((member) => member.querySelector(".mantine-Badge-label").textContent + (member.hasAttribute("data-camera") ? "📷" : "") + (member.hasAttribute("data-muted") ? "🔇" : "")) : null,
+      badges: ${BADGES},
       audio: $$t("call-audio").map((audio) => ({
         playing: !audio.paused && audio.srcObject != null && audio.srcObject.getAudioTracks().length > 0,
         muted: audio.muted,
@@ -2264,13 +2266,13 @@ const main = async () => {
     k2 = await newPage(cdp, "K2", { initExtra: withName("Lee") });
     await k1.goto(callRoom);
     await k2.goto(callRoom);
-    await waitCall(k1, "K1 can join", (c) => c.join && c.bar == null);
+    await waitCall(k1, "K1 can join", (c) => c.join && c.badges.length === 0);
     await waitCall(k2, "K2 can join", (c) => c.join);
     assert.equal(await k1.eval("window.__userMediaCalls"), 0, "no microphone before joining");
 
     await k1.click(tid("call-join"));
-    const joined = await waitCall(k1, "K1 in the call", (c) => c.leave && c.bar?.length === 1);
-    assert.deepEqual(joined.bar, ["Kim"]);
+    const joined = await waitCall(k1, "K1 in the call", (c) => c.leave && c.badges.length === 1);
+    assert.deepEqual(joined.badges, ["☎You"]);
     assert.equal(joined.muted, false, "not muted when joining");
     assert.equal(joined.microphone, "on");
     assert.equal(joined.join, false);
@@ -2282,7 +2284,7 @@ const main = async () => {
     assert.deepEqual(joined.audio, [], "the own microphone does not play");
 
     const heard = await waitCall(k2, "K2 plays Kim's microphone", (c) => c.audio.length === 1 && c.audio[0].playing);
-    assert.deepEqual(heard.bar, ["Kim"]);
+    assert.deepEqual(heard.badges, ["☎Kim"]);
     assert.equal(heard.join, true, "K2 is not in the call");
     await waitAudioFlowing(k2, "audio from K1");
     await k2.openMenu();
@@ -2298,8 +2300,8 @@ const main = async () => {
     await k2.click(tid("call-join"));
     await waitCall(k1, "K1 plays Lee's microphone", (c) => c.audio.length === 1 && c.audio[0].playing);
     await waitAudioFlowing(k1, "audio from K2");
-    const both = await waitCall(k2, "K2 in the call", (c) => c.leave && c.bar?.length === 2);
-    assert.deepEqual(both.bar, ["Kim", "Lee"]);
+    const both = await waitCall(k2, "K2 in the call", (c) => c.leave && c.badges.length === 2);
+    assert.deepEqual(both.badges, ["☎Kim", "☎You"]);
     assert.equal(both.audio.length, 1);
   });
 
@@ -2307,10 +2309,10 @@ const main = async () => {
     await k1.click(tid("call-mute"));
     const muted = await waitCall(k1, "K1 muted", (c) => c.muted === true);
     assert.equal(muted.microphone, "off");
-    await waitCall(k2, "K2 sees Kim muted", (c) => c.bar?.[0] === "Kim🔇");
+    await waitCall(k2, "K2 sees Kim muted", (c) => c.badges[0] === "☎Kim🔇");
     await k1.click(tid("call-mute"));
     assert.equal((await waitCall(k1, "K1 unmuted", (c) => c.muted === false)).microphone, "on");
-    await waitCall(k2, "K2 sees Kim unmuted", (c) => c.bar?.[0] === "Kim");
+    await waitCall(k2, "K2 sees Kim unmuted", (c) => c.badges[0] === "☎Kim");
   });
 
   await step("call: after a WebSocket drop, the page joins again with the same microphone", async () => {
@@ -2320,10 +2322,10 @@ const main = async () => {
     await waitCall(
       k2,
       "K2 sees Kim's new stream",
-      (c) => c.calls.length === 2 && !c.calls.some((call) => call.streamId === before) && c.bar?.includes("Kim"),
+      (c) => c.calls.length === 2 && !c.calls.some((call) => call.streamId === before) && c.badges.includes("☎Kim"),
       15000,
     );
-    const back = await waitCall(k1, "K1 in the call again", (c) => c.leave && c.bar?.length === 2);
+    const back = await waitCall(k1, "K1 in the call again", (c) => c.leave && c.badges.length === 2);
     assert.equal(back.microphoneCalls, 1, "the microphone was not asked for again");
     assert.equal(back.microphone, "on");
     await waitCall(k2, "K2 plays Kim again", (c) => c.audio.length === 1 && c.audio[0].playing);
@@ -2332,14 +2334,14 @@ const main = async () => {
 
   await step("call: leaving stops the microphone and its sound; a reload leaves the call", async () => {
     await k1.click(tid("call-leave"));
-    const left = await waitCall(k1, "K1 left", (c) => c.join && c.bar?.length === 1);
+    const left = await waitCall(k1, "K1 left", (c) => c.join && c.badges.length === 1);
     assert.equal(left.microphone, "ended");
-    assert.deepEqual(left.bar, ["Lee"]);
+    assert.deepEqual(left.badges, ["☎Lee"]);
     const k2State = await waitCall(k2, "K2 no longer plays Kim", (c) => c.audio.length === 0);
-    assert.deepEqual(k2State.bar, ["Lee"]);
+    assert.deepEqual(k2State.badges, ["☎You"]);
     await k2.reload();
-    await waitCall(k2, "K2 out of the call after the reload", (c) => c.join && c.bar == null);
-    await waitCall(k1, "K1 sees nobody in the call", (c) => c.bar == null && c.audio.length === 0);
+    await waitCall(k2, "K2 out of the call after the reload", (c) => c.join && c.badges.length === 0);
+    await waitCall(k1, "K1 sees nobody in the call", (c) => c.badges.length === 0 && c.audio.length === 0);
   });
 
   await step("call: a refused microphone shows a notice and does not join", async () => {
@@ -2409,8 +2411,8 @@ const main = async () => {
           mirrored: getComputedStyle(video).transform !== "none",
         };
       }),
-      bar: $$t("call-member").map((member) => member.querySelector(".mantine-Badge-label").textContent + (member.hasAttribute("data-camera") ? "📷" : "") + (member.hasAttribute("data-muted") ? "🔇" : "")),
-      speaking: $$t("call-member").filter((member) => member.hasAttribute("data-speaking")).map((member) => member.querySelector(".mantine-Badge-label").textContent),
+      badges: ${BADGES},
+      speaking: [...$$t("tile-name"), ...$$t("voice-member")].filter((badge) => badge.hasAttribute("data-speaking")).map((badge) => badge.querySelector(".mantine-Badge-label").textContent),
       notices: [...document.querySelectorAll('[data-testid^="notice-"]')].map((notice) => notice.dataset.testid),
     };
   })()`;
@@ -2458,7 +2460,7 @@ const main = async () => {
       for (const page of [v2, v3]) {
         const seen = await waitVideo(page, `${page.label} sees Vic's camera`, (v) => v.tiles[0]?.playing === true);
         assert.deepEqual(seen.tiles, [{ name: "Vic", self: false, playing: true, muted: true, mirrored: false }]);
-        assert.deepEqual(seen.bar, ["Vic📷"]);
+        assert.deepEqual(seen.badges, ["📷Vic"]);
       }
       await v2.shot("camera");
     },
@@ -2468,7 +2470,7 @@ const main = async () => {
     await v1.click(tid("call-camera"));
     const off = await waitVideo(v1, "V1 camera off", (v) => v.tiles.length === 0 && v.camera === "ended");
     assert.deepEqual(off.cameraButton, { pressed: false, disabled: false });
-    await waitVideo(v2, "V2 no longer sees Vic's camera", (v) => v.tiles.length === 0 && v.bar[0] === "Vic");
+    await waitVideo(v2, "V2 no longer sees Vic's camera", (v) => v.tiles.length === 0 && v.badges[0] === "☎Vic");
     await v1.click(tid("call-camera"));
     await waitVideo(v2, "V2 sees Vic's camera again", (v) => v.tiles[0]?.playing === true);
   });
@@ -2484,6 +2486,12 @@ const main = async () => {
     assert.equal(refused.tiles.filter((tile) => tile.self).length, 0);
     await sleep(500);
     assert.equal((await v1.eval(VIDEO)).tiles.length, 2, "V1 still sees two cameras");
+    // Xia is in the call without a tile, so Xia shows in the row of voices under the stage
+    await waitVideo(
+      v1,
+      "V1 sees Xia by voice",
+      (v) => JSON.stringify(v.badges) === JSON.stringify(["📷You", "📷Wes", "☎Xia"]),
+    );
   });
 
   await step("call: who speaks is marked, but not while muted", async () => {
@@ -2491,7 +2499,7 @@ const main = async () => {
     await waitVideo(v1, "V1 sees Wes speak", (v) => v.speaking.includes("Wes"), 20000);
     await v2.click(tid("call-mute"));
     await waitCall(v1, "V1 sees Wes muted", (c) =>
-      c.bar?.some((name) => name.startsWith("Wes") && name.includes("🔇")),
+      c.badges.some((badge) => badge.includes("Wes") && badge.includes("🔇")),
     );
     await sleep(1000);
     for (let i = 0; i < 10; i++) {

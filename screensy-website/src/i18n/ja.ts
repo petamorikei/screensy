@@ -37,9 +37,11 @@ export const ja: Messages = {
   "call.unmute": "ミュートを解除",
   "call.cameraOn": "カメラをオン",
   "call.cameraOff": "カメラをオフ",
-  "call.members": "通話中",
+  "call.microphone": "マイク",
+  "call.camera": "カメラ",
+  "call.voice": "音声で通話中",
+  "call.voiceOnly": "音声",
   "call.muted": "ミュート中",
-  "call.camera": "カメラオン",
   "call.echo":
     "共有している音声に通話の声が入り、全員に送り返されてしまうため、いまは共有音声を止めています。どちらにしますか？",
   "call.echoCall": "通話を聞く（共有音声は送らない）",
@@ -140,6 +142,7 @@ export const ja: Messages = {
   "dialog.resume": "再開する",
 
   "tile.self": "あなた",
+  "tile.screen": "画面",
   "tile.mute": "消音",
   "tile.unmute": "消音を解除",
   "tile.fullscreen": "全画面表示",

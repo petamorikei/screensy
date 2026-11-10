@@ -1,14 +1,22 @@
+/* The stage, and under it the participants in the call who have no tile */
+.root {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--app-shell-header-height, 0px));
+  background-color: var(--mantine-color-dark-9);
+}
+
 /* The tiles, laid out evenly: one fills the stage, two side by side, three or four in a 2x2 grid, and more in as many
    columns as rows */
 .stage {
   position: relative;
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template: 1fr / 1fr;
   gap: 4px;
-  height: calc(100dvh - var(--app-shell-header-height, 0px));
   padding: 4px;
   box-sizing: border-box;
-  background-color: var(--mantine-color-dark-9);
 }
 
 .stage[data-count="2"] {
@@ -107,12 +115,11 @@
   background: linear-gradient(transparent, rgb(0 0 0 / 70%));
 }
 
+/* The badge of the tile, which shrinks before the buttons */
 .name {
-  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 100%;
+  margin-right: auto;
 }
 
 /* The page-wide status, over an empty stage */
@@ -127,10 +134,22 @@
   pointer-events: none;
 }
 
-/* The participants in the call, over the top left corner, clear of the names of the tiles at the bottom */
-.members {
-  position: absolute;
-  inset: var(--mantine-spacing-sm) auto auto var(--mantine-spacing-sm);
-  z-index: 1;
-  max-width: calc(100% - 2 * var(--mantine-spacing-sm));
+/* One row, which scrolls when it is full */
+.voice {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  margin: 0;
+  padding: 0 4px 4px;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.voiceMember {
+  flex-shrink: 0;
+  max-width: 16em;
+}
+
+.voiceBadge {
+  max-width: 100%;
 }

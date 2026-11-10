@@ -1,12 +1,20 @@
-import { ActionIcon, Badge, Group, Text, Tooltip } from "@mantine/core";
-import { IconMaximize, IconMicrophoneOff, IconVideo, IconVolume, IconVolumeOff } from "@tabler/icons-react";
+import { ActionIcon, Badge, Text, Tooltip } from "@mantine/core";
+import {
+  IconMaximize,
+  IconMicrophoneOff,
+  IconPhone,
+  IconScreenShare,
+  IconVideo,
+  IconVolume,
+  IconVolumeOff,
+} from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
 import type { CSSProperties } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { MessageKey } from "../i18n/index.ts";
 import { t } from "../i18n/index.ts";
 import { callAtom, devicesAtom, stageAtom } from "../state/atoms.ts";
-import type { StatusId, TileStatusId, TileView } from "../state/views.ts";
+import type { CallStateView, StatusId, TileKind, TileStatusId, TileView } from "../state/views.ts";
 import { useController } from "./controller.ts";
 import { useFirstClick, useMediaPlayback } from "./media.ts";
 import classes from "./Stage.module.css";
@@ -38,6 +46,54 @@ const tileStatusText = (view: TileView): string | null => {
   return view.countdown == null ? text : text + t("tile.countdown", { countdown: view.countdown });
 };
 
+const BADGE_ICON_SIZE = 14;
+
+/**
+ * What a badge shows: a screen, a camera, or the voice alone of someone in the call without a tile
+ */
+type BadgeKind = TileKind | "voice";
+
+const kindIcon = (kind: BadgeKind) => {
+  switch (kind) {
+    case "screen":
+      return <IconScreenShare size={BADGE_ICON_SIZE} aria-label={t("tile.screen")} />;
+    case "camera":
+      return <IconVideo size={BADGE_ICON_SIZE} aria-label={t("call.camera")} />;
+    case "voice":
+      return <IconPhone size={BADGE_ICON_SIZE} aria-label={t("call.voiceOnly")} />;
+  }
+};
+
+/**
+ * A name with what it shows, and the state in the call: filled green while speaking, a mark while muted
+ */
+const CallBadge = (props: {
+  testId: string;
+  kind: BadgeKind;
+  name: string;
+  call: CallStateView | null;
+  className: string;
+}) => {
+  const { call } = props;
+
+  return (
+    <Badge
+      className={props.className}
+      data-testid={props.testId}
+      data-kind={props.kind}
+      data-muted={call?.muted || undefined}
+      data-speaking={call?.speaking || undefined}
+      size="lg"
+      variant={call?.speaking ? "filled" : "default"}
+      color={call?.speaking ? "green" : "gray"}
+      leftSection={kindIcon(props.kind)}
+      rightSection={call?.muted ? <IconMicrophoneOff size={BADGE_ICON_SIZE} aria-label={t("call.muted")} /> : null}
+    >
+      {props.name}
+    </Badge>
+  );
+};
+
 const Tile = (props: {
   view: TileView;
   muted: boolean;
@@ -65,7 +121,7 @@ const Tile = (props: {
       data-key={view.key}
       data-kind={view.kind}
       data-self={view.self || undefined}
-      data-speaking={view.speaking || undefined}
+      data-speaking={(view.kind === "camera" && view.call?.speaking) || undefined}
       data-spotlighted={props.spotlighted || undefined}
       data-status={view.status ?? undefined}
     >
@@ -92,9 +148,13 @@ const Tile = (props: {
         </div>
       )}
       <div className={classes.bar}>
-        <Text className={classes.name} size="sm" data-testid="tile-name">
-          {view.self ? t("tile.self") : view.name}
-        </Text>
+        <CallBadge
+          className={classes.name}
+          testId="tile-name"
+          kind={view.kind}
+          name={view.self ? t("tile.self") : view.name}
+          call={view.call}
+        />
         {!view.self && view.kind === "screen" && (
           <Tooltip label={muted ? t("tile.unmute") : t("tile.mute")}>
             <ActionIcon
@@ -126,38 +186,31 @@ const Tile = (props: {
 };
 
 /**
- * The participants in the call, over the corner of the stage
+ * The participants in the call who have no tile, neither a screen nor a camera, in a row under the stage
  */
-const CallMembers = () => {
+const VoiceMembers = (props: { tiles: TileView[] }) => {
   const call = useAtomValue(callAtom);
+  const shown = new Set(props.tiles.map((tile) => tile.participantId));
+  const members = call.members.filter((member) => !shown.has(member.id));
 
-  if (call.members.length === 0) {
+  if (members.length === 0) {
     return null;
   }
 
   return (
-    <Group className={classes.members} data-testid="call-members" gap={6} aria-label={t("call.members")}>
-      {call.members.map((member) => (
-        <Badge
-          key={member.id}
-          data-testid="call-member"
-          data-muted={member.muted || undefined}
-          data-camera={member.camera || undefined}
-          data-speaking={member.speaking || undefined}
-          size="lg"
-          variant={member.speaking ? "filled" : "default"}
-          color={member.speaking ? "green" : "gray"}
-          rightSection={
-            <>
-              {member.camera && <IconVideo size={14} aria-label={t("call.camera")} />}
-              {member.muted && <IconMicrophoneOff size={14} aria-label={t("call.muted")} />}
-            </>
-          }
-        >
-          {member.name}
-        </Badge>
+    <ul className={classes.voice} data-testid="call-voice" aria-label={t("call.voice")}>
+      {members.map((member) => (
+        <li key={member.id} className={classes.voiceMember}>
+          <CallBadge
+            className={classes.voiceBadge}
+            testId="voice-member"
+            kind="voice"
+            name={member.self ? t("tile.self") : member.name}
+            call={member}
+          />
+        </li>
       ))}
-    </Group>
+    </ul>
   );
 };
 
@@ -185,34 +238,36 @@ export const Stage = () => {
   } as CSSProperties;
 
   return (
-    <div
-      className={classes.stage}
-      data-testid="stage"
-      data-count={tiles.length}
-      data-many={tiles.length > 4 || undefined}
-      data-spotlight={spotlighted || undefined}
-      style={style}
-    >
-      {tiles.map((view) => (
-        <Tile
-          key={`${view.key}:${view.self}`}
-          view={view}
-          muted={isMuted(view.key)}
-          spotlighted={spotlighted && view.key === spotlight}
-          speaker={speaker}
-          onBlocked={onBlocked}
-          onToggleSpotlight={() => setSpotlight((current) => (current === view.key ? null : view.key))}
-          onToggleMute={() => setUserMuted((current) => new Map(current).set(view.key, !isMuted(view.key)))}
-        />
-      ))}
-      {stage.status != null && (
-        <div className={classes.pageStatus} role="status">
-          <Text size="lg" c="dimmed" data-testid="page-status" data-status={stage.status}>
-            {t(PAGE_STATUS[stage.status])}
-          </Text>
-        </div>
-      )}
-      <CallMembers />
+    <div className={classes.root}>
+      <div
+        className={classes.stage}
+        data-testid="stage"
+        data-count={tiles.length}
+        data-many={tiles.length > 4 || undefined}
+        data-spotlight={spotlighted || undefined}
+        style={style}
+      >
+        {tiles.map((view) => (
+          <Tile
+            key={`${view.key}:${view.self}`}
+            view={view}
+            muted={isMuted(view.key)}
+            spotlighted={spotlighted && view.key === spotlight}
+            speaker={speaker}
+            onBlocked={onBlocked}
+            onToggleSpotlight={() => setSpotlight((current) => (current === view.key ? null : view.key))}
+            onToggleMute={() => setUserMuted((current) => new Map(current).set(view.key, !isMuted(view.key)))}
+          />
+        ))}
+        {stage.status != null && (
+          <div className={classes.pageStatus} role="status">
+            <Text size="lg" c="dimmed" data-testid="page-status" data-status={stage.status}>
+              {t(PAGE_STATUS[stage.status])}
+            </Text>
+          </div>
+        )}
+      </div>
+      <VoiceMembers tiles={tiles} />
     </div>
   );
 };

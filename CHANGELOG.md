@@ -57,11 +57,13 @@ The format is based on [Keep a Changelog], and this project adheres to
     reload, and is gone when everyone has left the room. The panel shows how
     many of the others the chat reaches.
 -   A voice call: "Join call" asks for the microphone, and everyone in the
-    room hears the people in the call, directly from their browsers. A bar
-    lists who is in the call and who is muted. After a lost connection to the
-    server, the page joins the call again by itself. When a presenter shares
-    sound that would carry the call back to everyone, the shared sound stays
-    off until they choose between it and hearing the call.
+    room hears the people in the call, directly from their browsers. The
+    name on each screen and camera shows whether it is a screen or a camera,
+    and whether that person is muted or speaking in the call; a row under the
+    stage shows those in the call by voice alone. After a lost connection to
+    the server, the page joins the call again by itself. When a presenter
+    shares sound that would carry the call back to everyone, the shared sound
+    stays off until they choose between it and hearing the call.
 -   Video in the call: "Turn camera on" shows the camera to everyone in the
     room, beside the shared screens. Up to four cameras can be on at once
     (`SCREENSY_MAX_CAMERAS`).

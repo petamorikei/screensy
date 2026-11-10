@@ -30,7 +30,14 @@ const ICON_SIZE = 20;
  */
 const ToolButton = (props: {
   testId: string;
+  /**
+   * What a click does, in the tooltip, and the name of the button unless it has its own
+   */
   label: string;
+  /**
+   * The name of a toggle, which stays the same while aria-pressed tells its state
+   */
+  name?: string;
   icon: ReactNode;
   onClick: () => void;
   disabled?: boolean;
@@ -44,7 +51,7 @@ const ToolButton = (props: {
   <Tooltip label={props.label}>
     <ActionIcon
       data-testid={props.testId}
-      aria-label={props.label}
+      aria-label={props.name ?? props.label}
       aria-pressed={props.pressed}
       variant={props.filled || props.pressed ? "filled" : "default"}
       color={props.color}
@@ -154,7 +161,8 @@ const PresentControls = () => {
 };
 
 /**
- * The call: join, mute, camera and leave
+ * The call: join, mute, camera and leave. The microphone and the camera are filled while they send, and red is only
+ * for leaving.
  */
 const CallControls = () => {
   const controller = useController();
@@ -182,14 +190,15 @@ const CallControls = () => {
     <>
       <ToolButton
         testId="call-mute"
+        name={t("call.microphone")}
         label={call.muted ? t("call.unmute") : t("call.mute")}
         icon={call.muted ? <IconMicrophoneOff size={ICON_SIZE} /> : <IconMicrophone size={ICON_SIZE} />}
-        pressed={call.muted}
-        color={call.muted ? "red" : undefined}
+        pressed={!call.muted}
         onClick={() => controller.call.setMuted(!call.muted)}
       />
       <ToolButton
         testId="call-camera"
+        name={t("call.camera")}
         label={call.camera ? t("call.cameraOff") : t("call.cameraOn")}
         icon={call.camera ? <IconVideo size={ICON_SIZE} /> : <IconVideoOff size={ICON_SIZE} />}
         pressed={call.camera}
