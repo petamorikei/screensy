@@ -262,6 +262,26 @@ public STUN server.
 `pnpm --filter screensy-cloudflare dev` runs the same Worker on your machine, at
 http://localhost:8787.
 
+### Deploying from GitHub Actions
+
+".github/workflows/deploy.yml" deploys the same way from GitHub, after the
+lint, the type checks and the protocol tests (on Node and on the Durable
+Object) pass. It needs two secrets in the repository:
+
+1.  In the Cloudflare dashboard, create an API token from the template "Edit
+    Cloudflare Workers", and note your account ID.
+
+2.  Add both as secrets:
+
+    ```sh
+    gh secret set CLOUDFLARE_API_TOKEN
+    gh secret set CLOUDFLARE_ACCOUNT_ID
+    ```
+
+Because a deploy ends every room, the workflow runs only when you start it
+(Actions → Deploy → Run workflow, or `gh workflow run deploy.yml`) and when
+you push a version tag (`v*`), never for every push.
+
 Things to know:
 
 -   The free plan allows 100,000 requests to the Durable Object a day, and every
@@ -308,6 +328,9 @@ presenters have to start again.
     mise install && pnpm install
     pnpm --filter screensy-cloudflare run cf:deploy
     ```
+
+    Or run the workflow of
+    [Deploying from GitHub Actions](#deploying-from-github-actions).
 
 ## Optional: password-protect your screensy instance
 
