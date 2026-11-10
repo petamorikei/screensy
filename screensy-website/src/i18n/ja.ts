@@ -71,7 +71,7 @@ export const ja: Messages = {
   "menu.frameRate": "フレームレート",
   "menu.resolution": "解像度",
   "menu.resolutionOriginal": "元の解像度",
-  "menu.bitrate": "ビットレートの上限（Mbps）",
+  "menu.bitrate": "ビットレートの上限",
   "menu.degradation": "優先",
   "menu.degradationResolution": "解像度",
   "menu.degradationFrameRate": "フレームレート",

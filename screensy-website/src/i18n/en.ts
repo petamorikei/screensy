@@ -69,7 +69,7 @@ export const en = {
   "menu.frameRate": "Frame rate",
   "menu.resolution": "Resolution",
   "menu.resolutionOriginal": "Original",
-  "menu.bitrate": "Maximum bitrate (Mbps)",
+  "menu.bitrate": "Maximum bitrate",
   "menu.degradation": "Priority",
   "menu.degradationResolution": "Resolution",
   "menu.degradationFrameRate": "Frame rate",

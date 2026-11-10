@@ -1067,7 +1067,7 @@ const main = async () => {
     await a.shot("15-menu-en");
     await a.closeMenu();
     assert.deepEqual(await menuValues(a), {
-      frameRate: "30",
+      frameRate: "60",
       resolution: "",
       bitrate: "100",
       degradation: "maintain-resolution",
@@ -1143,9 +1143,9 @@ const main = async () => {
     assert.ok(fps.length === 2 && fps.every((value) => value <= 33), "at most about 30 fps");
   });
 
-  await step("an invalid value is not applied and the input goes back", async () => {
+  await step("a value that is not one of the choices is not applied and the input goes back", async () => {
     await setInput(a, "quality-frame-rate", "0");
-    await setInput(a, "quality-bitrate", "1000");
+    await setInput(a, "quality-bitrate", "3");
     assert.deepEqual(await menuValues(a), {
       frameRate: "30",
       resolution: "360",
@@ -1168,11 +1168,11 @@ const main = async () => {
       degradation: "maintain-framerate",
     });
     await a3.eval(
-      `localStorage.setItem("screensy.quality", JSON.stringify({ frameRate: 45, maxHeight: 720, degradation: "fast" }))`,
+      `localStorage.setItem("screensy.quality", JSON.stringify({ frameRate: 45, maxHeight: 720, maxBitrateMbps: 3, degradation: "fast" }))`,
     );
     await a3.reload();
     assert.deepEqual(await menuValues(a3), {
-      frameRate: "30",
+      frameRate: "60",
       resolution: "720",
       bitrate: "100",
       degradation: "maintain-resolution",
@@ -1184,7 +1184,7 @@ const main = async () => {
       await a3.waitFor(`A3 joined with ${stored}`, (s) => s.toolbar.includes("menu-open"));
       assert.deepEqual(
         await menuValues(a3),
-        { frameRate: "30", resolution: "", bitrate: "100", degradation: "maintain-resolution" },
+        { frameRate: "60", resolution: "", bitrate: "100", degradation: "maintain-resolution" },
         `stored ${stored}`,
       );
     }

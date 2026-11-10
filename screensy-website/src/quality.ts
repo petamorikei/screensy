@@ -7,8 +7,6 @@ export const QUALITY_STORAGE_KEY = "screensy.quality";
  * The frame rates to choose from
  */
 export const FRAME_RATES = [60, 30];
-export const MIN_BITRATE_MBPS = 0.1;
-export const MAX_BITRATE_MBPS = 100;
 export const AUDIO_BITRATE = 960_000;
 
 /**
@@ -16,13 +14,19 @@ export const AUDIO_BITRATE = 960_000;
  */
 export const RESOLUTION_HEIGHTS = [2160, 1440, 1080, 720, 480, 360];
 
+/**
+ * The maximum bitrates to choose from, in Mbps. The highest leaves the bitrate to the congestion control: without
+ * maxBitrate, Chrome would keep to its own low default.
+ */
+export const BITRATES_MBPS = [100, 50, 20, 10, 5, 2, 1];
+
 // Each setting on its own, also for the inputs of the menu
 export const FrameRateSchema = z.number().refine((value) => FRAME_RATES.includes(value));
 export const MaxHeightSchema = z
   .number()
   .refine((value) => RESOLUTION_HEIGHTS.includes(value))
   .nullable();
-export const BitrateSchema = z.number().min(MIN_BITRATE_MBPS).max(MAX_BITRATE_MBPS);
+export const BitrateSchema = z.number().refine((value) => BITRATES_MBPS.includes(value));
 export const DegradationSchema = z.enum(["maintain-resolution", "maintain-framerate", "balanced"]);
 
 /**
@@ -30,7 +34,7 @@ export const DegradationSchema = z.enum(["maintain-resolution", "maintain-framer
  * value falls back to its default.
  */
 const QualitySettingsSchema = z.object({
-  frameRate: FrameRateSchema.catch(30),
+  frameRate: FrameRateSchema.catch(60),
   maxHeight: MaxHeightSchema.catch(null),
   maxBitrateMbps: BitrateSchema.catch(100),
   /**
